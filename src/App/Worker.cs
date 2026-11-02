@@ -5,8 +5,12 @@ namespace GeminiMenu;
 
 public static class Worker
 {
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
     public static void Run(JobKind kind, string file)
     {
+        try { SetCurrentProcessExplicitAppUserModelID("GeminiMenu.Worker"); } catch { }
         Jobs.AudioConverter = AudioConvert.ToWav;
         var form = new WaitForm(kind == JobKind.Transcribe ? "מתמלל" : "מסכם", Path.GetFileName(file));
         using var cts = new CancellationTokenSource();

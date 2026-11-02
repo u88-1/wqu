@@ -5,8 +5,11 @@ namespace GeminiMenu;
 public sealed class AppConfig
 {
     public string ApiKey { get; set; } = "";
-    public string Model { get; set; } = "gemini-2.5-flash";
-    public string FallbackModel { get; set; } = "gemini-2.5-flash-lite";
+    /// <summary>"auto" = pick the newest available Flash model from the API.</summary>
+    public string Model { get; set; } = "auto";
+    public string FallbackModel { get; set; } = "";
+    /// <summary>Last model that worked in auto mode (tried first next time).</summary>
+    public string ResolvedModel { get; set; } = "";
 
     public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GeminiMenu");
     public static string FilePath => Path.Combine(Dir, "config.json");
@@ -28,7 +31,13 @@ public sealed class AppConfig
             if (!File.Exists(path)) return new AppConfig();
             var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), Opts) ?? new AppConfig();
             cfg.ApiKey = (cfg.ApiKey ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(cfg.Model)) cfg.Model = "gemini-2.5-flash";
+            if (string.IsNullOrWhiteSpace(cfg.Model)) cfg.Model = "auto";
+            // Older versions saved fixed defaults that Google has since retired for new keys.
+            if (cfg.Model == "gemini-2.5-flash" && (cfg.FallbackModel is "" or "gemini-2.5-flash-lite"))
+            {
+                cfg.Model = "auto";
+                cfg.FallbackModel = "";
+            }
             return cfg;
         }
         catch (Exception ex)

@@ -21,6 +21,7 @@ public static class Worker
                 if (string.IsNullOrWhiteSpace(cfg.ApiKey))
                     throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
                 using var client = new GeminiClient(cfg, form.SetStatus);
+                client.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
                 var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, form.SetStatus, cts.Token));
                 outPath = HtmlPages.Save(file, kind == JobKind.Transcribe ? "תמלול" : "סיכום", HtmlPages.ResultPage(result));
             }

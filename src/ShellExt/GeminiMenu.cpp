@@ -1,4 +1,5 @@
-// Windows 11 main-context-menu commands: "תמלל הקלטה" (audio) and "סכם לי" (documents).
+// Windows 11 main-context-menu commands: "Transcribe" (audio) and "Summarize" (documents).
+// Hebrew titles are written as \u escapes so the file compiles correctly under any source code page.
 // Registered through a sparse MSIX package (see package/AppxManifest.xml).
 #ifndef UNICODE
 #define UNICODE
@@ -183,9 +184,9 @@ public:
         if (outer) return CLASS_E_NOAGGREGATION;
         Command* cmd = nullptr;
         if (IsEqualCLSID(m_id, CLSID_TranscribeCmd))
-            cmd = new (std::nothrow) Command(m_id, L"תמלל הקלטה", L"mic.ico", L"transcribe", kAudioExt, ARRAYSIZE(kAudioExt));
+            cmd = new (std::nothrow) Command(m_id, L"\u05EA\u05DE\u05DC\u05DC \u05D4\u05E7\u05DC\u05D8\u05D4", L"mic.ico", L"transcribe", kAudioExt, ARRAYSIZE(kAudioExt));
         else
-            cmd = new (std::nothrow) Command(m_id, L"סכם לי", L"doc.ico", L"summarize", kDocExt, ARRAYSIZE(kDocExt));
+            cmd = new (std::nothrow) Command(m_id, L"\u05E1\u05DB\u05DD \u05DC\u05D9", L"doc.ico", L"summarize", kDocExt, ARRAYSIZE(kDocExt));
         if (!cmd) return E_OUTOFMEMORY;
         HRESULT hr = cmd->QueryInterface(riid, ppv);
         cmd->Release();

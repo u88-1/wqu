@@ -65,7 +65,12 @@ public sealed class GeminiClient : IDisposable
         return new AppException(kind, msg, status, $"HTTP {status}: {msg}");
     }
 
-    static bool Retryable(AppException e) => e.Kind is ErrKind.Overloaded or ErrKind.Quota or ErrKind.Network;
+    static bool Retryable(AppException e)
+    {
+        // "limit: 0" means this model has no free-tier quota at all: waiting will not help.
+        if (e.Kind == ErrKind.Quota && (e.Technical ?? "").Contains("limit: 0", StringComparison.OrdinalIgnoreCase)) return false;
+        return e.Kind is ErrKind.Overloaded or ErrKind.Quota or ErrKind.Network;
+    }
 
     TimeSpan Backoff(int attempt)
     {
@@ -197,28 +202,94 @@ public sealed class GeminiClient : IDisposable
         catch { /* best effort; Google deletes uploads after 48h anyway */ }
     }
 
+    /// <summary>Called with the model name after a successful call in auto mode (so it can be remembered).</summary>
+    public Action<string>? ModelWorked { get; set; }
+
+    static readonly System.Text.RegularExpressions.Regex FlashName =
+        new(@"^gemini-(\d+(?:\.\d+)?)-flash(-lite)?(-preview[\w.-]*)?$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    List<string>? _discovered;
+
+    /// <summary>Asks the API which Flash models this key can use, best first (stable before preview, full before lite).</summary>
+    public async Task<List<string>> DiscoverModelsAsync(CancellationToken ct)
+    {
+        if (_discovered != null) return _discovered;
+        var found = new List<(string Name, double Ver, bool Lite, bool Preview)>();
+        try
+        {
+            string? page = null;
+            for (int guard = 0; guard < 10; guard++)
+            {
+                var url = $"{Base}/v1beta/models?pageSize=200" + (page == null ? "" : "&pageToken=" + Uri.EscapeDataString(page));
+                var reply = await SendAsync(() => Req(HttpMethod.Get, url), 2, ct).ConfigureAwait(false);
+                var root = JsonNode.Parse(reply.Body);
+                if (root?["models"] is JsonArray ms)
+                    foreach (var m in ms)
+                    {
+                        var name = ((string?)m?["name"] ?? "").Replace("models/", "");
+                        var methods = m?["supportedGenerationMethods"] as JsonArray;
+                        if (methods == null || !methods.Any(x => (string?)x == "generateContent")) continue;
+                        var mt = FlashName.Match(name);
+                        if (!mt.Success) continue;
+                        found.Add((name, double.Parse(mt.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture), mt.Groups[2].Success, mt.Groups[3].Success));
+                    }
+                page = (string?)root?["nextPageToken"];
+                if (string.IsNullOrEmpty(page)) break;
+            }
+        }
+        catch (AppException) { /* listing is a convenience; fall back to known names below */ }
+
+        _discovered = found
+            .OrderBy(f => f.Preview).ThenBy(f => f.Lite).ThenByDescending(f => f.Ver)
+            .Select(f => f.Name).Distinct().ToList();
+        if (_discovered.Count == 0)
+            _discovered = new List<string> { "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash" };
+        return _discovered;
+    }
+
     /// <param name="parts">Gemini "parts" array. Built per call; this method serializes it once.</param>
     public async Task<GenResult> GenerateAsync(JsonArray parts, JsonObject generationConfig, bool disableThinkingWhenPossible, CancellationToken ct)
     {
-        var models = new List<(string Model, int Attempts)> { (_cfg.Model, 5) };
-        if (!string.IsNullOrWhiteSpace(_cfg.FallbackModel) && _cfg.FallbackModel != _cfg.Model)
-            models.Add((_cfg.FallbackModel, 3));
-
-        AppException? last = null;
-        for (int i = 0; i < models.Count; i++)
+        bool auto = string.IsNullOrWhiteSpace(_cfg.Model) || _cfg.Model == "auto";
+        var queue = new Queue<string>();
+        var tried = new HashSet<string>();
+        void Enqueue(string? m)
         {
-            var (model, attempts) = models[i];
+            if (!string.IsNullOrWhiteSpace(m) && m != "auto" && !tried.Contains(m) && !queue.Contains(m)) queue.Enqueue(m!);
+        }
+        if (auto) Enqueue(_cfg.ResolvedModel); else Enqueue(_cfg.Model);
+        Enqueue(_cfg.FallbackModel);
+
+        bool discovered = false;
+        var errors = new List<string>();
+        AppException? last = null;
+        const int MaxModels = 4;
+
+        while (tried.Count < MaxModels)
+        {
+            if (queue.Count == 0)
+            {
+                if (discovered) break;
+                discovered = true;
+                foreach (var m in await DiscoverModelsAsync(ct).ConfigureAwait(false)) Enqueue(m);
+                if (queue.Count == 0) break;
+            }
+            var model = queue.Dequeue();
+            tried.Add(model);
             try
             {
-                return await GenerateOnceAsync(model, parts, generationConfig, disableThinkingWhenPossible, attempts, ct).ConfigureAwait(false);
+                var res = await GenerateOnceAsync(model, parts, generationConfig, disableThinkingWhenPossible, tried.Count == 1 ? 5 : 3, ct).ConfigureAwait(false);
+                if (auto && model != _cfg.ResolvedModel) { try { ModelWorked?.Invoke(model); } catch { } }
+                return res;
             }
             catch (AppException e) when (e.Kind is ErrKind.Overloaded or ErrKind.Quota or ErrKind.NotFound or ErrKind.Network)
             {
                 last = e;
-                if (i < models.Count - 1) _status("עובר למודל חלופי של Gemini...");
+                errors.Add($"[{model}] {e.Technical ?? e.Message}");
+                _status("עובר למודל חלופי של Gemini...");
             }
         }
-        throw last!;
+        throw new AppException(last?.Kind ?? ErrKind.Other, last?.Message ?? "לא נמצא מודל זמין", last?.Status ?? 0, string.Join("\n", errors));
     }
 
     async Task<GenResult> GenerateOnceAsync(string model, JsonArray parts, JsonObject genCfg, bool noThink, int attempts, CancellationToken ct)

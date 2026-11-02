@@ -22,7 +22,7 @@ jobs:
         shell: cmd
         run: |
           mkdir out
-          cl /nologo /LD /MT /O2 /EHsc /std:c++17 /DUNICODE /D_UNICODE src\ShellExt\GeminiMenu.cpp /link /DEF:src\ShellExt\GeminiMenu.def ole32.lib shell32.lib shlwapi.lib /OUT:out\GeminiMenu.dll
+          cl /nologo /LD /MT /O2 /EHsc /std:c++17 /utf-8 /DUNICODE /D_UNICODE src\ShellExt\GeminiMenu.cpp /link /DEF:src\ShellExt\GeminiMenu.def ole32.lib shell32.lib shlwapi.lib /OUT:out\GeminiMenu.dll
 
       - name: Create self-signed certificate
         shell: pwsh

@@ -84,7 +84,7 @@ public static class Jobs
                 new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } },
                 new JsonObject { ["text"] = TranscribePrompt },
             };
-            var cfg = new JsonObject { ["temperature"] = 0, ["maxOutputTokens"] = 65536 };
+            var cfg = new JsonObject { ["maxOutputTokens"] = 65000 };
             var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
 
             string? note = res.FinishReason == "MAX_TOKENS" ? "ההקלטה ארוכה מאוד, והתמלול נקטע בסופו בגלל מגבלת אורך של Gemini." : null;
@@ -165,7 +165,6 @@ public static class Jobs
             status("מסכם...");
             var cfg = new JsonObject
             {
-                ["temperature"] = 0.2,
                 ["maxOutputTokens"] = 8192,
                 ["responseMimeType"] = "application/json",
                 ["responseSchema"] = SummarySchema(),

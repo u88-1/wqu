@@ -44,7 +44,13 @@ public sealed class WaitForm : Form
         BackColor = Color.White;
         ShowInTaskbar = true;
         ShowIcon = true;
-        try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
+        try
+        {
+            using var res = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("mic.ico");
+            if (res != null) Icon = new Icon(res);
+            else Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
+        }
+        catch { try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { } }
 
         // Header band with the app icon, the action and the file name.
         var header = new Panel { Dock = DockStyle.Top, Height = 72, BackColor = Accent };

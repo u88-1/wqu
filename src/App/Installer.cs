@@ -100,6 +100,7 @@ public static class Installer
             cfg.Save();
         }
 
+        try { RunPs("ie4uinit.exe -show"); } catch { }
         RestartExplorer(log);
 
         // Old versions: best effort (files may still be locked until sign-out).

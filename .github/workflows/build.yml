@@ -47,6 +47,9 @@ jobs:
           Write-Host "Using SDK tools in $sdk"
           New-Item -ItemType Directory -Force out\pkg\assets | Out-Null
           Copy-Item package\AppxManifest.xml out\pkg\
+          $manifest = Get-Content out\pkg\AppxManifest.xml -Raw
+          $manifest = $manifest -replace 'Version="1\.0\.0\.0"', 'Version="1.0.${{ github.run_number }}.0"'
+          Set-Content -Path out\pkg\AppxManifest.xml -Value $manifest -Encoding utf8
           Copy-Item package\assets\*.png out\pkg\assets\
           $log = & "$sdk\makeappx.exe" pack /d out\pkg /p out\GeminiMenu.msix /nv /o 2>&1 | Out-String
           Write-Host $log

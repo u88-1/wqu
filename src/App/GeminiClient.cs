@@ -35,7 +35,7 @@ public sealed class GeminiClient : IDisposable
     // Per-request timeouts (the HttpClient itself has none, so one hung request cannot block for 30 minutes).
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(2);
     static readonly TimeSpan UploadTimeout = TimeSpan.FromMinutes(10);
-    static readonly TimeSpan GenerateTimeout = TimeSpan.FromMinutes(8);
+    static readonly TimeSpan GenerateTimeout = TimeSpan.FromMinutes(10);
 
     sealed record Reply(int Status, string Body, Dictionary<string, string> Headers);
 
@@ -223,6 +223,9 @@ public sealed class GeminiClient : IDisposable
     static readonly System.Text.RegularExpressions.Regex FlashName =
         new(@"^gemini-(\d+(?:\.\d+)?)-flash(-lite)?(-preview[\w.-]*)?$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    static readonly System.Text.RegularExpressions.Regex ThinkingLevelModel =
+        new(@"^gemini-([3-9]|\d{2,})(\.\d+)?-flash", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     List<string>? _discovered;
 
     /// <summary>Asks the API which Flash models this key can use, best first (stable before preview, full before lite).</summary>
@@ -309,24 +312,46 @@ public sealed class GeminiClient : IDisposable
 
     async Task<GenResult> GenerateOnceAsync(string model, JsonArray parts, JsonObject genCfg, bool noThink, int attempts, CancellationToken ct)
     {
-        var cfg = (JsonObject)JsonNode.Parse(genCfg.ToJsonString())!;
-        if (noThink && model.Contains("2.5") && model.Contains("flash"))
-            cfg["thinkingConfig"] = new JsonObject { ["thinkingBudget"] = 0 };
-
-        var body = new JsonObject
+        // Gemini 2.5 Flash: thinkingBudget = 0. Gemini 3.x Flash: thinkingLevel = "minimal" (default is medium/high,
+        // which made a 3-minute transcription take minutes). If a model rejects it, retry once without it.
+        bool levelModel = noThink && ThinkingLevelModel.IsMatch(model);
+        string BuildBody(bool minimal)
         {
-            ["contents"] = new JsonArray { new JsonObject { ["parts"] = JsonNode.Parse(parts.ToJsonString()) } },
-            ["generationConfig"] = cfg,
-        }.ToJsonString();
+            var cfg = (JsonObject)JsonNode.Parse(genCfg.ToJsonString())!;
+            if (noThink && model.Contains("2.5") && model.Contains("flash"))
+                cfg["thinkingConfig"] = new JsonObject { ["thinkingBudget"] = 0 };
+            if (minimal)
+                cfg["thinkingConfig"] = new JsonObject { ["thinkingLevel"] = "minimal" };
+            return new JsonObject
+            {
+                ["contents"] = new JsonArray { new JsonObject { ["parts"] = JsonNode.Parse(parts.ToJsonString()) } },
+                ["generationConfig"] = cfg,
+            }.ToJsonString();
+        }
 
-        var reply = await SendAsync(() =>
+        Task<Reply> Post(string body) => SendAsync(() =>
         {
             var r = Req(HttpMethod.Post, $"{Base}/v1beta/models/{model}:generateContent");
             r.Content = new StringContent(body, Encoding.UTF8, "application/json");
             return r;
-        }, attempts, ct, GenerateTimeout).ConfigureAwait(false);
+        }, attempts, ct, GenerateTimeout);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Log.Write($"generate: model={model}, thinkingLevel={(levelModel ? "minimal" : "default")}");
+        Reply reply;
+        try
+        {
+            reply = await Post(BuildBody(levelModel)).ConfigureAwait(false);
+        }
+        catch (AppException e) when (levelModel && e.Kind == ErrKind.BadRequest)
+        {
+            Log.Write("model rejected thinkingLevel, retrying without it: " + (e.Technical ?? e.Message));
+            reply = await Post(BuildBody(false)).ConfigureAwait(false);
+        }
 
         var root = JsonNode.Parse(reply.Body);
+        var usage = root?["usageMetadata"];
+        Log.Write($"generate done in {sw.Elapsed.TotalSeconds:0}s: prompt={(int?)usage?["promptTokenCount"]}, thoughts={(int?)usage?["thoughtsTokenCount"]}, output={(int?)usage?["candidatesTokenCount"]}, finish={(string?)root?["candidates"]?[0]?["finishReason"]}");
         var cand = root?["candidates"]?[0];
         var sb = new StringBuilder();
         if (cand?["content"]?["parts"] is JsonArray ps)

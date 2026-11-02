@@ -33,7 +33,7 @@ public sealed class WaitForm : Form
         RightToLeftLayout = true;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
-        MinimizeBox = false;
+        MinimizeBox = true;
         TopMost = true;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(440, 220);
@@ -70,7 +70,16 @@ public sealed class WaitForm : Form
         _cancel.SetBounds(14, 174, 90, 30);
         _cancel.Click += (_, _) => { CancelRequested?.Invoke(); Close(); };
 
-        Controls.AddRange(new Control[] { _title, _status, _elapsedLabel, formatLabel, _format, _bar, _cancel });
+        var minimizeHint = new Label
+        {
+            Text = "אפשר למזער; העיבוד ימשיך ברקע.",
+            ForeColor = Color.FromArgb(102, 112, 133),
+            Font = new Font("Segoe UI", 9f),
+            TextAlign = ContentAlignment.MiddleRight,
+        };
+        minimizeHint.SetBounds(116, 174, 310, 30);
+
+        Controls.AddRange(new Control[] { _title, _status, _elapsedLabel, formatLabel, _format, _bar, _cancel, minimizeHint });
         _clock.Tick += (_, _) => UpdateElapsed();
         _clock.Start();
         FormClosed += (_, _) => { _clock.Stop(); _clock.Dispose(); };

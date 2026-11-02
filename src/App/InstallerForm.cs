@@ -68,7 +68,9 @@ public sealed class InstallerForm : Form
         var existing = SafeLoad();
         var hint = new Label
         {
-            Text = string.IsNullOrEmpty(existing.ApiKey) ? "הדבק כאן את המפתח שקיבלת מ-Google." : "כבר שמור מפתח. השאר ריק כדי לא לשנות אותו.",
+            Text = string.IsNullOrEmpty(existing.ApiKey)
+                ? "הדבק כאן את המפתח שקיבלת מ-Google."
+                : "המפתח השמור מוצג כאן כשהוא מוסתר; אפשר להשאיר אותו כפי שהוא.",
             ForeColor = Muted,
             Font = new Font("Segoe UI", 9f),
             Bounds = new Rectangle(20, 122, 472, 20),
@@ -79,6 +81,7 @@ public sealed class InstallerForm : Form
         _key.BorderStyle = BorderStyle.FixedSingle;
         _key.RightToLeft = RightToLeft.No; // keys are Latin text
         _key.TextAlign = HorizontalAlignment.Left;
+        _key.Text = existing.ApiKey;
 
         _show.Text = "הצג את המפתח";
         _show.Bounds = new Rectangle(20, 188, 160, 24);
@@ -96,7 +99,7 @@ public sealed class InstallerForm : Form
 
         var note = new Label
         {
-            Text = "המפתח נשמר רק במחשב הזה, בתיקיית AppData שלך.",
+            Text = "המפתח נשמר ב-AppData ונשאר גם אחרי הסרה והתקנה מחדש.",
             ForeColor = Muted,
             Font = new Font("Segoe UI", 9f),
             Bounds = new Rectangle(20, 224, 472, 22),

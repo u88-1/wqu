@@ -60,7 +60,7 @@ public sealed class InstallerForm : Form
 
         var what = new Label
         {
-            Text = "מוסיף לתפריט הראשי של Windows 11:\r\n•  \"תמלל הקלטה\" לקובצי שמע\r\n•  \"סכם לי\" לקובצי pdf, txt, docx ו-md",
+            Text = "מוסיף לתפריט הראשי של Windows 11:\r\n•  \"תמלל הקלטה\" לקובצי שמע ווידאו MP4\r\n•  \"סכם לי\" לקובצי pdf, txt, docx ו-md",
             Bounds = new Rectangle(20, 16, 472, 76),
         };
 

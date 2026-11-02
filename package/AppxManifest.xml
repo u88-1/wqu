@@ -71,6 +71,9 @@
             <desktop5:ItemType Type=".opus">
               <desktop5:Verb Id="Transcribeopus" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
+            <desktop5:ItemType Type=".mp4">
+              <desktop5:Verb Id="Transcribemp4" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+            </desktop5:ItemType>
             <desktop5:ItemType Type=".pdf">
               <desktop5:Verb Id="Summarizepdf" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
             </desktop5:ItemType>

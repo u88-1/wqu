@@ -112,6 +112,8 @@ btn.addEventListener('click',async()=>{
     {
         var title = r.Kind == JobKind.Transcribe ? "תמלול הקלטה" : "סיכום מסמך";
         var meta = r.FileName + "  ·  " + DateTime.Now.ToString("dd/MM/yyyy HH:mm");
+        if (r.ProcessingTime is { } elapsed)
+            meta += "  ·  זמן עיבוד: " + $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
         return Shell(title, meta, r.BodyHtml, r.PlainText, r.Note == null ? null : E(r.Note));
     }
 
@@ -183,7 +185,7 @@ btn.addEventListener('click',async()=>{
                 case ErrKind.Unsupported:
                     what = "סוג הקובץ אינו נתמך";
                     happened = ae.Message;
-                    todo.Add("תמלול עובד על קובצי שמע (wav, mp3, m4a, ogg, amr, flac, aac, wma, opus).");
+                    todo.Add("תמלול עובד על קובצי שמע (wav, mp3, m4a, ogg, amr, flac, aac, wma, opus) ועל סרטוני mp4.");
                     todo.Add("סיכום עובד על pdf, txt, docx ו-md.");
                     break;
                 case ErrKind.FileProblem:
@@ -218,31 +220,35 @@ btn.addEventListener('click',async()=>{
 
     // ------------------------------------------------------------------ saving
 
-    static string Unique(string dir, string baseName, string suffix)
+    static string Unique(string dir, string baseName, string suffix, string extension)
     {
-        var p = Path.Combine(dir, $"{baseName} - {suffix}.html");
-        for (int i = 2; File.Exists(p); i++) p = Path.Combine(dir, $"{baseName} - {suffix} ({i}).html");
+        var p = Path.Combine(dir, $"{baseName} - {suffix}{extension}");
+        for (int i = 2; File.Exists(p); i++) p = Path.Combine(dir, $"{baseName} - {suffix} ({i}){extension}");
         return p;
     }
 
     /// <summary>Saves next to the source file; falls back to the temp folder if that folder is not writable.</summary>
-    public static string Save(string sourceFile, string suffix, string html)
+    static string SaveContent(string sourceFile, string suffix, string content, string extension)
     {
         var dir = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) ?? ".";
         var baseName = Path.GetFileNameWithoutExtension(sourceFile);
         try
         {
-            var p = Unique(dir, baseName, suffix);
-            File.WriteAllText(p, html, new UTF8Encoding(true));
+            var p = Unique(dir, baseName, suffix, extension);
+            File.WriteAllText(p, content, new UTF8Encoding(true));
             return p;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             var tmp = Path.Combine(Path.GetTempPath(), "GeminiMenu");
             Directory.CreateDirectory(tmp);
-            var p = Unique(tmp, baseName, suffix);
-            File.WriteAllText(p, html, new UTF8Encoding(true));
+            var p = Unique(tmp, baseName, suffix, extension);
+            File.WriteAllText(p, content, new UTF8Encoding(true));
             return p;
         }
     }
+
+    public static string Save(string sourceFile, string suffix, string html) => SaveContent(sourceFile, suffix, html, ".html");
+
+    public static string SaveText(string sourceFile, string suffix, string text) => SaveContent(sourceFile, suffix, text, ".txt");
 }

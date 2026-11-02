@@ -22,7 +22,7 @@ static const CLSID CLSID_TranscribeCmd = {0x7A1C0D55, 0x3B7E, 0x4F6B, {0x9C, 0x2
 // {7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02}
 static const CLSID CLSID_SummarizeCmd = {0x7A1C0D55, 0x3B7E, 0x4F6B, {0x9C, 0x21, 0x5E, 0x8D, 0x4A, 0x6B, 0x1F, 0x02}};
 
-static const wchar_t* const kAudioExt[] = {L".wav", L".mp3", L".m4a", L".ogg", L".amr", L".flac", L".aac", L".wma", L".opus"};
+static const wchar_t* const kAudioExt[] = {L".wav", L".mp3", L".m4a", L".ogg", L".amr", L".flac", L".aac", L".wma", L".opus", L".mp4"};
 static const wchar_t* const kDocExt[] = {L".pdf", L".txt", L".docx", L".md"};
 
 static std::wstring ModuleDir()

@@ -7,11 +7,13 @@ namespace GeminiMenu;
 
 public enum JobKind { Transcribe, Summarize }
 
-public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note);
+public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null);
 
 public static class Jobs
 {
     public static readonly string[] AudioExts = { ".wav", ".mp3", ".m4a", ".ogg", ".amr", ".flac", ".aac", ".wma", ".opus" };
+    public static readonly string[] VideoExts = { ".mp4" };
+    public static readonly string[] TranscriptionExts = AudioExts.Concat(VideoExts).ToArray();
     public static readonly string[] DocExts = { ".pdf", ".txt", ".docx", ".md" };
 
     /// <summary>Converts m4a/wma/amr to a temp wav. Set by the Windows app (NAudio). Returns null on failure.</summary>
@@ -30,7 +32,7 @@ public static class Jobs
 
         if (kind == JobKind.Transcribe)
         {
-            if (!AudioExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו קובץ שמע נתמך: " + ext);
+            if (!TranscriptionExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו קובץ שמע או וידאו נתמך: " + ext);
             return await TranscribeAsync(file, ext, name, client, status, ct).ConfigureAwait(false);
         }
         if (!DocExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו נתמך לסיכום: " + ext);
@@ -40,10 +42,10 @@ public static class Jobs
     // ------------------------------------------------------------------ transcription
 
     const string TranscribePrompt =
-        "תמלל את ההקלטה המצורפת במלואה, מילה במילה, בשפה שבה נאמרו הדברים (דיבור בעברית יתומלל בעברית). " +
+        "תמלל את הדיבור שבהקלטה או בסרטון המצורפים במלואו, מילה במילה, בשפה שבה נאמרו הדברים (דיבור בעברית יתומלל בעברית). " +
         "אל תסכם, אל תתרגם ואל תוסיף הערות משלך. " +
         "אם יש כמה דוברים, התחל כל תור דיבור בשורה חדשה עם התווית 'דובר 1:', 'דובר 2:' וכן הלאה. " +
-        "קטע שאינו ברור סמן [לא ברור]. אם אין בהקלטה דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
+        "קטע שאינו ברור סמן [לא ברור]. אם אין בהקלטה או בסרטון דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
 
     static string AudioMime(string ext) => ext switch
@@ -62,7 +64,7 @@ public static class Jobs
     static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct)
     {
         string upPath = file;
-        string mime = AudioMime(ext);
+        string mime = ext == ".mp4" ? "video/mp4" : AudioMime(ext);
         string? temp = null;
 
         if ((ext is ".m4a" or ".wma" or ".amr") && AudioConverter != null)
@@ -75,7 +77,7 @@ public static class Jobs
         UploadedFile? up = null;
         try
         {
-            status("מעלה את ההקלטה ל-Gemini...");
+            status("מעלה את המדיה ל-Gemini...");
             up = await client.UploadAsync(upPath, mime, ct).ConfigureAwait(false);
 
             status("מתמלל... (הקלטות ארוכות לוקחות זמן)");

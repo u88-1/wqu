@@ -11,6 +11,7 @@ public static class Worker
         var form = new WaitForm(kind == JobKind.Transcribe ? "מתמלל" : "מסכם", Path.GetFileName(file));
         using var cts = new CancellationTokenSource();
         form.CancelRequested += () => cts.Cancel();
+        var stopwatch = Stopwatch.StartNew();
         string? outPath = null;
 
         form.Shown += async (_, _) =>
@@ -23,7 +24,15 @@ public static class Worker
                 using var client = new GeminiClient(cfg, form.SetStatus);
                 client.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
                 var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, form.SetStatus, cts.Token));
-                outPath = HtmlPages.Save(file, kind == JobKind.Transcribe ? "תמלול" : "סיכום", HtmlPages.ResultPage(result));
+                result = result with { ProcessingTime = stopwatch.Elapsed };
+                var suffix = kind == JobKind.Transcribe ? "תמלול" : "סיכום";
+                var html = HtmlPages.ResultPage(result);
+                outPath = form.SelectedFormat switch
+                {
+                    ResultFormat.Text => HtmlPages.SaveText(file, suffix, result.PlainText),
+                    ResultFormat.Both => SaveBoth(file, suffix, html, result.PlainText),
+                    _ => HtmlPages.Save(file, suffix, html),
+                };
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
             {
@@ -44,5 +53,11 @@ public static class Worker
         Application.Run(form);
         if (outPath != null)
             Process.Start(new ProcessStartInfo(outPath) { UseShellExecute = true });
+    }
+
+    static string SaveBoth(string file, string suffix, string html, string text)
+    {
+        HtmlPages.SaveText(file, suffix, text);
+        return HtmlPages.Save(file, suffix, html);
     }
 }

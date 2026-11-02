@@ -24,13 +24,18 @@ public sealed class GeminiClient : IDisposable
         _cfg = cfg;
         _status = status ?? (_ => { });
         _ownsHttp = http == null;
-        _http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+        _http = http ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
     }
 
     public void Dispose()
     {
         if (_ownsHttp) _http.Dispose();
     }
+
+    // Per-request timeouts (the HttpClient itself has none, so one hung request cannot block for 30 minutes).
+    static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(2);
+    static readonly TimeSpan UploadTimeout = TimeSpan.FromMinutes(10);
+    static readonly TimeSpan GenerateTimeout = TimeSpan.FromMinutes(8);
 
     sealed record Reply(int Status, string Body, Dictionary<string, string> Headers);
 
@@ -62,13 +67,17 @@ public sealed class GeminiClient : IDisposable
             500 or 502 or 503 or 504 => ErrKind.Overloaded,
             _ => ErrKind.Other,
         };
-        return new AppException(kind, msg, status, $"HTTP {status}: {msg}");
+        var tech = $"HTTP {status}: {msg}";
+        // Daily quota will not recover by waiting a few seconds.
+        if (body.Contains("PerDay", StringComparison.OrdinalIgnoreCase) || lower.Contains("per day")) tech += " [PerDay]";
+        return new AppException(kind, msg, status, tech);
     }
 
     static bool Retryable(AppException e)
     {
         // "limit: 0" means this model has no free-tier quota at all: waiting will not help.
         if (e.Kind == ErrKind.Quota && (e.Technical ?? "").Contains("limit: 0", StringComparison.OrdinalIgnoreCase)) return false;
+        if (e.Kind == ErrKind.Quota && (e.Technical ?? "").Contains("[PerDay]", StringComparison.Ordinal)) return false;
         return e.Kind is ErrKind.Overloaded or ErrKind.Quota or ErrKind.Network;
     }
 
@@ -80,16 +89,19 @@ public sealed class GeminiClient : IDisposable
 
     // ---------------------------------------------------------------- transport
 
-    async Task<Reply> SendAsync(Func<HttpRequestMessage> make, int maxAttempts, CancellationToken ct)
+    async Task<Reply> SendAsync(Func<HttpRequestMessage> make, int maxAttempts, CancellationToken ct, TimeSpan? timeout = null)
     {
+        int timeouts = 0;
         for (int attempt = 1; ; attempt++)
         {
             AppException failure;
             try
             {
                 using var req = make();
-                using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
-                var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(timeout ?? DefaultTimeout);
+                using var resp = await _http.SendAsync(req, cts.Token).ConfigureAwait(false);
+                var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
                 if (resp.IsSuccessStatusCode)
                 {
                     var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -102,7 +114,7 @@ public sealed class GeminiClient : IDisposable
             {
                 failure = new AppException(ErrKind.Network, "אין חיבור יציב לאינטרנט או ל-Gemini", technical: e.Message, inner: e);
             }
-            catch (TaskCanceledException e) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException e) when (!ct.IsCancellationRequested)
             {
                 failure = new AppException(ErrKind.Network, "הבקשה ל-Gemini ארכה יותר מדי זמן", technical: "timeout", inner: e);
             }
@@ -111,6 +123,9 @@ public sealed class GeminiClient : IDisposable
                 failure = new AppException(ErrKind.Network, "החיבור ל-Gemini נותק באמצע", technical: e.Message, inner: e);
             }
 
+            Log.Write($"request failed (attempt {attempt}/{maxAttempts}): {failure.Technical ?? failure.Message}");
+            // A request that timed out once usually will again: allow one retry, not five.
+            if (failure.Technical == "timeout" && ++timeouts >= 2) throw failure;
             if (!Retryable(failure) || attempt >= maxAttempts) throw failure;
 
             var wait = Backoff(attempt);
@@ -167,7 +182,7 @@ public sealed class GeminiClient : IDisposable
             content.Headers.ContentLength = len;
             r.Content = content;
             return r;
-        }, 3, ct).ConfigureAwait(false);
+        }, 3, ct, UploadTimeout).ConfigureAwait(false);
 
         var file = JsonNode.Parse(fin.Body)?["file"];
         var name = (string?)file?["name"];
@@ -309,7 +324,7 @@ public sealed class GeminiClient : IDisposable
             var r = Req(HttpMethod.Post, $"{Base}/v1beta/models/{model}:generateContent");
             r.Content = new StringContent(body, Encoding.UTF8, "application/json");
             return r;
-        }, attempts, ct).ConfigureAwait(false);
+        }, attempts, ct, GenerateTimeout).ConfigureAwait(false);
 
         var root = JsonNode.Parse(reply.Body);
         var cand = root?["candidates"]?[0];

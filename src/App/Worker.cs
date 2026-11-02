@@ -13,6 +13,8 @@ public static class Worker
         form.CancelRequested += () => cts.Cancel();
         var stopwatch = Stopwatch.StartNew();
         string? outPath = null;
+        Action<string> status = m => { Log.Write(m); form.SetStatus(m); };
+        Log.Write($"=== start {kind}: {file}");
 
         form.Shown += async (_, _) =>
         {
@@ -21,9 +23,9 @@ public static class Worker
                 var cfg = AppConfig.Load();
                 if (string.IsNullOrWhiteSpace(cfg.ApiKey))
                     throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
-                using var client = new GeminiClient(cfg, form.SetStatus);
+                using var client = new GeminiClient(cfg, status);
                 client.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
-                var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, form.SetStatus, cts.Token));
+                var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, status, cts.Token));
                 result = result with { ProcessingTime = stopwatch.Elapsed };
                 var suffix = kind == JobKind.Transcribe ? "תמלול" : "סיכום";
                 var html = HtmlPages.ResultPage(result);
@@ -40,6 +42,7 @@ public static class Worker
             }
             catch (Exception ex)
             {
+                Log.Write("ERROR: " + ex);
                 try { outPath = HtmlPages.Save(file, "שגיאה", HtmlPages.ErrorPage(ex, Path.GetFileName(file), kind)); }
                 catch { MessageBox.Show(ex.Message, "Gemini", MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign); }
             }

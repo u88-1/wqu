@@ -22,6 +22,9 @@ public static class Jobs
 
     const int MaxChars = 3_000_000;
     const long InlinePdfLimit = 12L * 1024 * 1024;
+    /// <summary>If the duration cannot be read, files bigger than this are still split into chunks.</summary>
+    const long UnknownDurationChunkBytes = 8L * 1024 * 1024;
+    const int MaxTranscriptTokens = 16000;
 
     static Jobs() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
@@ -44,7 +47,7 @@ public static class Jobs
 
     const string TranscribePrompt =
         "תמלל את הדיבור שבהקלטה או בסרטון המצורפים במלואו, מילה במילה, בשפה שבה נאמרו הדברים (דיבור בעברית יתומלל בעברית). " +
-        "אל תסכם, אל תתרגם ואל תוסיף הערות משלך. " +
+        "אל תסכם, אל תתרגם ואל תוסיף הערות משלך. אין מגבלת אורך: תמלל עד סוף ההקלטה ואל תקצר ואל תדלג. " +
         "אם יש כמה דוברים, התחל כל תור דיבור בשורה חדשה עם התווית 'דובר 1:', 'דובר 2:' וכן הלאה. " +
         "קטע שאינו ברור סמן [לא ברור]. אם אין בהקלטה או בסרטון דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
@@ -52,6 +55,7 @@ public static class Jobs
     const string ChunkPrompt =
         "הקובץ המצורף הוא קטע מתוך הקלטה ארוכה, וייתכן שחלקים בתחילתו או בסופו חופפים לקטעים סמוכים. " +
         "תמלל במלואו את כל הדיבור שנשמע בקטע המצורף, כולל הדיבור שבחפיפה. אל תשמיט מילים בתחילת הקטע או בסופו. " +
+        "אין מגבלת אורך: תמלל כל מילה עד סוף הקטע. אל תקצר, אל תדלג, ואל תכתוב שהקובץ ארוך מדי או שתמשיך בהמשך. " +
         "תמלל מילה במילה ובשפה שבה נאמרו הדברים, והשתמש בתוויות דוברים ('דובר 1:', 'דובר 2:' וכן הלאה). " +
         "קטע שאינו ברור סמן [לא ברור]. אם אין דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
@@ -79,7 +83,8 @@ public static class Jobs
             duration = TimeSpan.Zero;
         }
 
-        if (duration > TimeSpan.FromSeconds(300))
+        bool unknownButBig = duration == TimeSpan.Zero && new FileInfo(file).Length > UnknownDurationChunkBytes;
+        if (duration > TimeSpan.FromSeconds(AudioConvert.ChunkSeconds) || unknownButBig)
             return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
 
         string upPath = file;
@@ -105,13 +110,13 @@ public static class Jobs
                 new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } },
                 new JsonObject { ["text"] = TranscribePrompt },
             };
-            var cfg = new JsonObject { ["maxOutputTokens"] = 65000 };
+            var cfg = new JsonObject { ["maxOutputTokens"] = MaxTranscriptTokens };
             var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
-            if (res.FinishReason == "MAX_TOKENS")
+            if (res.FinishReason == "MAX_TOKENS" || Evaluate(res.Text, duration) != ChunkVerdict.Ok)
             {
                 if (up != null) { await client.DeleteFileAsync(up).ConfigureAwait(false); up = null; }
                 if (temp != null) { try { File.Delete(temp); } catch { } temp = null; }
-                status("התמלול נקטע. מחלק לקטעים קצרים יותר ומנסה שוב...");
+                status("התמלול נראה חלקי או נקטע. מחלק לקטעים קצרים יותר ומנסה שוב...");
                 return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
             }
 
@@ -142,37 +147,115 @@ public static class Jobs
         var transcript = new StringBuilder();
         int total = pending.Count;
         int completed = 0;
-        bool splitForTruncation = false;
+        bool split = false;
+        var retries = new Dictionary<string, int>();
+        var gaps = new List<string>();
+        string? abortReason = null;
+
+        void Append(string text) => transcript.Clear().Append(MergeChunkTranscripts(transcript.ToString(), text));
+        void Gap(AudioChunk c)
+        {
+            var range = $"{Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)}";
+            gaps.Add(range);
+            Append($"[⚠ הקטע {range} לא תומלל במלואו]");
+        }
+        void SplitAndQueue(AudioChunk c)
+        {
+            split = true;
+            var smaller = chunkSet.Split(c);
+            total += smaller.Count - 1;
+            for (int i = smaller.Count - 1; i >= 0; i--) pending.AddFirst(smaller[i]);
+        }
 
         while (pending.Count > 0)
         {
             ct.ThrowIfCancellationRequested();
             var chunk = pending.First!.Value;
             pending.RemoveFirst();
-            status($"מתמלל קטע {completed + 1} מתוך {total}...");
+            status($"מתמלל קטע {completed + 1} מתוך {total} ({Fmt(chunk.AbsStart)}–{Fmt(chunk.AbsEnd)})...");
 
-            var result = await TranscribeChunkAsync(chunk.Path, ChunkPrompt, client, ct).ConfigureAwait(false);
+            GenResult result;
+            try
+            {
+                result = await TranscribeChunkAsync(chunk.Path, ChunkPrompt, client, ct).ConfigureAwait(false);
+            }
+            catch (AppException e) when (transcript.Length > 0 && e.Kind is not (ErrKind.NoKey or ErrKind.BadKey))
+            {
+                // Keep everything transcribed so far instead of throwing it away.
+                abortReason = e.Message;
+                Append($"[⚠ התמלול הופסק כאן ({Fmt(chunk.AbsStart)}): {e.Message}]");
+                Log.Write("transcription aborted, partial result kept: " + (e.Technical ?? e.Message));
+                break;
+            }
+
             if (result.FinishReason == "MAX_TOKENS")
             {
-                splitForTruncation = true;
-                var smaller = chunkSet.Split(chunk);
-                total += smaller.Count - 1;
-                for (int i = smaller.Count - 1; i >= 0; i--)
-                    pending.AddFirst(smaller[i]);
+                if (chunkSet.CanSplit(chunk)) SplitAndQueue(chunk);
+                else { Gap(chunk); completed++; }
                 continue;
             }
 
-            var merged = MergeChunkTranscripts(transcript.ToString(), result.Text);
-            transcript.Clear().Append(merged);
+            var verdict = Evaluate(result.Text, chunk.CoreDuration);
+            if (verdict != ChunkVerdict.Ok)
+            {
+                Log.Write($"chunk {Fmt(chunk.AbsStart)} looks {verdict}: {TranscriptWord.Matches(result.Text).Count} words in {chunk.CoreDuration.TotalSeconds:0}s");
+                int tries = retries.GetValueOrDefault(chunk.Path);
+                if (tries < 1)
+                {
+                    retries[chunk.Path] = tries + 1;
+                    status("התמלול של הקטע נראה חלקי. מנסה שוב...");
+                    pending.AddFirst(chunk);
+                    continue;
+                }
+                if (verdict == ChunkVerdict.Excuse)
+                {
+                    if (chunkSet.CanSplit(chunk)) SplitAndQueue(chunk);
+                    else { Gap(chunk); completed++; }
+                    continue;
+                }
+                // Short but no excuse text, even after a retry: probably real silence/music. Keep it.
+            }
+
+            Append(result.Text);
             completed++;
         }
 
         var text = transcript.ToString().Trim();
-        var note = splitForTruncation
-            ? "קטעים ארוכים שנחתכו חולקו אוטומטית לקטעים קצרים יותר."
-            : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.";
-        return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, note);
+        var notes = new List<string>
+        {
+            split
+                ? "קטעים שנראו חלקיים או נקטעו חולקו אוטומטית לקטעים קצרים יותר."
+                : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.",
+        };
+        if (gaps.Count > 0) notes.Add("קטעים שלא תומללו במלואם: " + string.Join(", ", gaps) + ".");
+        if (abortReason != null) notes.Add("התמלול הופסק באמצע (" + abortReason + "). מה שתומלל עד כה נשמר.");
+        return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, string.Join(" ", notes));
     }
+
+    // ------------------------------------------------------------------ output sanity check
+
+    internal enum ChunkVerdict { Ok, Short, Excuse }
+
+    // Typical Hebrew speech is ~100-170 words/minute. Gemini sometimes answers with an excuse
+    // ("the file is too long...") or stops early instead of transcribing; detect that.
+    const double MinWordsPerMinute = 15;
+    const double ExcuseWordsPerMinute = 60;
+    static readonly Regex ExcuseRegex = new(
+        @"ארוכ[הת]? מדי|אורך (ה)?(קובץ|הקלטה|קטע)|בשל (ה)?אורך|מחמת (ה)?אורך|לא (ניתן|אוכל|אצליח|אספיק) (ל)?תמלל|לא תומלל|אמשיך|המשך (ה)?תמלול|להמשיך (ב)?תמלול|ניתן להמשיך",
+        RegexOptions.Compiled);
+
+    internal static ChunkVerdict Evaluate(string text, TimeSpan duration)
+    {
+        var t = text.Trim();
+        if (t.StartsWith("[לא זוהה דיבור]") && t.Length < 40) return ChunkVerdict.Ok;
+        if (duration < TimeSpan.FromSeconds(45)) return ChunkVerdict.Ok; // too short to judge
+        double wpm = TranscriptWord.Matches(t).Count / duration.TotalMinutes;
+        if (wpm < ExcuseWordsPerMinute && ExcuseRegex.IsMatch(t)) return ChunkVerdict.Excuse;
+        if (wpm < MinWordsPerMinute) return ChunkVerdict.Short;
+        return ChunkVerdict.Ok;
+    }
+
+    static string Fmt(TimeSpan t) => $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}";
 
     static string MergeChunkTranscripts(string previous, string next)
     {
@@ -224,7 +307,7 @@ public static class Jobs
                 new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } },
                 new JsonObject { ["text"] = prompt },
             };
-            var cfg = new JsonObject { ["maxOutputTokens"] = 65000 };
+            var cfg = new JsonObject { ["maxOutputTokens"] = MaxTranscriptTokens };
             return await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
         }
         finally

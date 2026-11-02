@@ -2,7 +2,12 @@ using NAudio.Wave;
 
 namespace GeminiMenu;
 
-public sealed record AudioChunk(string Path, TimeSpan CoreStart, TimeSpan CoreEnd, int Depth);
+/// <param name="AbsStart">Start of the core part inside the ORIGINAL recording (CoreStart/CoreEnd are relative to this chunk's own wav file).</param>
+public sealed record AudioChunk(string Path, TimeSpan CoreStart, TimeSpan CoreEnd, int Depth, TimeSpan AbsStart = default)
+{
+    public TimeSpan CoreDuration => CoreEnd - CoreStart;
+    public TimeSpan AbsEnd => AbsStart + CoreDuration;
+}
 
 public sealed class AudioChunkSet : IDisposable
 {
@@ -17,17 +22,20 @@ public sealed class AudioChunkSet : IDisposable
 
     public List<AudioChunk> Chunks { get; }
 
+    public bool CanSplit(AudioChunk chunk) =>
+        chunk.CoreDuration > TimeSpan.FromSeconds(20) && chunk.Depth < 4;
+
     public List<AudioChunk> Split(AudioChunk chunk)
     {
         var coreDuration = chunk.CoreEnd - chunk.CoreStart;
-        if (coreDuration <= TimeSpan.FromSeconds(20) || chunk.Depth >= 4)
+        if (!CanSplit(chunk))
             throw new AppException(ErrKind.Blocked, "Gemini חתך תמלול של קטע קצר, ולא ניתן לחלק אותו עוד באופן בטוח.");
 
         using var reader = new WaveFileReader(chunk.Path);
         var middle = chunk.CoreStart + TimeSpan.FromTicks(coreDuration.Ticks / 2);
         var overlap = TimeSpan.FromSeconds(OverlapSeconds);
-        var left = CreateChunk(reader, chunk.CoreStart, middle, overlap, _directory, chunk.Depth + 1);
-        var right = CreateChunk(reader, middle, chunk.CoreEnd, overlap, _directory, chunk.Depth + 1);
+        var left = CreateChunk(reader, chunk.CoreStart, middle, overlap, _directory, chunk.Depth + 1, chunk.AbsStart);
+        var right = CreateChunk(reader, middle, chunk.CoreEnd, overlap, _directory, chunk.Depth + 1, chunk.AbsStart + (middle - chunk.CoreStart));
         return new List<AudioChunk> { left, right };
     }
 
@@ -39,7 +47,7 @@ public sealed class AudioChunkSet : IDisposable
     }
 
     internal static AudioChunk CreateChunk(WaveFileReader reader, TimeSpan coreStart, TimeSpan coreEnd,
-        TimeSpan overlap, string directory, int depth)
+        TimeSpan overlap, string directory, int depth, TimeSpan absStart)
     {
         var audioStart = coreStart > overlap ? coreStart - overlap : TimeSpan.Zero;
         var audioEnd = coreEnd + overlap;
@@ -63,7 +71,7 @@ public sealed class AudioChunkSet : IDisposable
             remaining -= read;
         }
 
-        return new AudioChunk(path, coreStart - audioStart, coreEnd - audioStart, depth);
+        return new AudioChunk(path, coreStart - audioStart, coreEnd - audioStart, depth, absStart);
     }
 
     static long Align(WaveFormat format, TimeSpan time)
@@ -76,7 +84,8 @@ public sealed class AudioChunkSet : IDisposable
 /// <summary>Uses Windows Media Foundation (via NAudio) to convert media into 16 kHz mono wav chunks.</summary>
 public static class AudioConvert
 {
-    const int ChunkSeconds = 300;
+    /// <summary>Shorter chunks are more reliable: the model rarely "gives up" on 3 minutes of audio.</summary>
+    public const int ChunkSeconds = 180;
     const int ChunkOverlapSeconds = 2;
 
     public static TimeSpan GetDuration(string input)
@@ -106,7 +115,7 @@ public static class AudioConvert
                 {
                     var end = start + coreLength;
                     if (end > duration) end = duration;
-                    chunks.Add(AudioChunkSet.CreateChunk(wav, start, end, overlap, directory, 0));
+                    chunks.Add(AudioChunkSet.CreateChunk(wav, start, end, overlap, directory, 0, start));
                 }
             }
             File.Delete(wavPath);

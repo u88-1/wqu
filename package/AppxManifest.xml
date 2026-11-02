@@ -45,43 +45,43 @@
         <desktop4:Extension Category="windows.fileExplorerContextMenus">
           <desktop4:FileExplorerContextMenus>
             <desktop5:ItemType Type=".wav">
-              <desktop5:Verb Id="Transcribe_wav" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribewav" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".mp3">
-              <desktop5:Verb Id="Transcribe_mp3" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribemp3" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".m4a">
-              <desktop5:Verb Id="Transcribe_m4a" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribem4a" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".ogg">
-              <desktop5:Verb Id="Transcribe_ogg" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribeogg" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".amr">
-              <desktop5:Verb Id="Transcribe_amr" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribeamr" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".flac">
-              <desktop5:Verb Id="Transcribe_flac" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribeflac" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".aac">
-              <desktop5:Verb Id="Transcribe_aac" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribeaac" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".wma">
-              <desktop5:Verb Id="Transcribe_wma" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribewma" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".opus">
-              <desktop5:Verb Id="Transcribe_opus" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
+              <desktop5:Verb Id="Transcribeopus" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F01" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".pdf">
-              <desktop5:Verb Id="Summarize_pdf" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
+              <desktop5:Verb Id="Summarizepdf" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".txt">
-              <desktop5:Verb Id="Summarize_txt" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
+              <desktop5:Verb Id="Summarizetxt" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".docx">
-              <desktop5:Verb Id="Summarize_docx" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
+              <desktop5:Verb Id="Summarizedocx" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=".md">
-              <desktop5:Verb Id="Summarize_md" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
+              <desktop5:Verb Id="Summarizemd" Clsid="7A1C0D55-3B7E-4F6B-9C21-5E8D4A6B1F02" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>

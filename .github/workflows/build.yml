@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build the Explorer menu DLL
+        shell: cmd
+        run: |
+          mkdir out
+          cl /nologo /LD /MT /O2 /EHsc /std:c++17 /DUNICODE /D_UNICODE src\ShellExt\GeminiMenu.cpp /link /DEF:src\ShellExt\GeminiMenu.def ole32.lib shell32.lib shlwapi.lib /OUT:out\GeminiMenu.dll
+
+      - name: Create self-signed certificate
+        shell: pwsh
+        run: |
+          $plain = [guid]::NewGuid().ToString('N')
+          Write-Host "::add-mask::$plain"
+          "PFXPASS=$plain" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $pw = ConvertTo-SecureString -String $plain -AsPlainText -Force
+          $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=GeminiMenu" -KeyUsage DigitalSignature `
+            -FriendlyName "GeminiMenu" -CertStoreLocation "Cert:\CurrentUser\My" -KeySpec Signature `
+            -NotAfter (Get-Date).AddYears(5) `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          Export-PfxCertificate -Cert $cert -FilePath out\cert.pfx -Password $pw | Out-Null
+          Export-Certificate -Cert $cert -FilePath out\GeminiMenu.cer | Out-Null
+
+      - name: Pack and sign the sparse package
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64\makeappx.exe" |
+                 Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
+          $sdk = $bin.DirectoryName
+          Write-Host "Using SDK tools in $sdk"
+          New-Item -ItemType Directory -Force out\pkg\assets | Out-Null
+          Copy-Item package\AppxManifest.xml out\pkg\
+          Copy-Item package\assets\*.png out\pkg\assets\
+          & "$sdk\makeappx.exe" pack /d out\pkg /p out\GeminiMenu.msix /nv /o
+          if ($LASTEXITCODE -ne 0) { throw "makeappx failed" }
+          & "$sdk\signtool.exe" sign /fd SHA256 /f out\cert.pfx /p $env:PFXPASS out\GeminiMenu.msix
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+
+      - name: Assemble installer payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out\payload\assets | Out-Null
+          Copy-Item out\GeminiMenu.dll, out\GeminiMenu.msix, out\GeminiMenu.cer out\payload\
+          Copy-Item package\assets\*.ico out\payload\assets\
+          Compress-Archive -Path out\payload\* -DestinationPath src\App\payload.zip -Force
+
+      - name: Publish single-file app (installer + worker)
+        shell: pwsh
+        run: |
+          dotnet publish src\App\GeminiMenu.csproj -c Release -o out\app
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+          Copy-Item out\app\GeminiMenu.exe out\GeminiMenu-Setup.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GeminiMenu-Setup
+          path: out/GeminiMenu-Setup.exe
+
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v1.0.${{ github.run_number }}"
+          gh release create $tag out\GeminiMenu-Setup.exe --title "GeminiMenu $tag" --notes "Download GeminiMenu-Setup.exe and run it."

@@ -1,0 +1,44 @@
+# GeminiMenu
+
+תפריט לחיצה ימנית ב-Windows 11 (בתפריט הראשי, לא תחת "הצג אפשרויות נוספות"):
+
+- **תמלל הקלטה**: wav, mp3, m4a, ogg, amr, flac, aac, wma, opus
+- **סכם לי**: pdf, txt, docx, md
+
+התוצאה נשמרת כדף HTML בעברית ליד הקובץ המקורי ונפתחת בדפדפן, עם כפתור "העתק הכל".
+התמלול והסיכום נעשים דרך Gemini API.
+
+## התקנה
+
+1. הורד את `GeminiMenu-Setup.exe` מעמוד ה-[Releases](../../releases/latest).
+2. הפעל אותו (אם SmartScreen מזהיר: **מידע נוסף** ואז **הפעל בכל זאת**, כי הקובץ לא חתום בתעודה מסחרית).
+3. הדבק מפתח Gemini API ולחץ **התקן / עדכן**.
+
+### מפתח API בחינם
+
+1. היכנס ל-<https://aistudio.google.com/apikey> עם חשבון Google.
+2. לחץ **Create API key**.
+3. הדבק את המפתח בחלון ההתקנה. הוא נשמר ב-`%APPDATA%\GeminiMenu\config.json` (מחוץ לקוד ולריפו).
+
+במסלול החינמי יש מגבלות קצב ונפח, ו-Google עשויה להשתמש בתוכן שנשלח לשיפור המוצרים שלה. מומלץ לא לשלוח כך מסמכים רגישים.
+
+## הגדרות
+
+`%APPDATA%\GeminiMenu\config.json`:
+
+```json
+{ "apiKey": "...", "model": "gemini-2.5-flash", "fallbackModel": "gemini-2.5-flash-lite" }
+```
+
+אם Gemini עמוס, יש עד 5 ניסיונות עם המתנה גדלה ואז מעבר למודל החלופי. אם הכול נכשל, נפתח דף שמסביר מה קרה.
+
+## הסרה
+
+הפעל שוב את `GeminiMenu-Setup.exe` ולחץ **הסר התקנה**.
+
+## מבנה
+
+- `src/ShellExt`: רכיב COM (`IExplorerCommand`) שמחליט מתי להציג כל פקודה ומפעיל תהליך נפרד לכל קובץ.
+- `src/App`: אפליקציה יחידה: חלונית המתנה, לקוח Gemini, יצירת הדפים והמתקין.
+- `package`: מניפסט של חבילת MSIX דלילה (Sparse Package) שרושמת את הפקודות ב-Explorer.
+- `.github/workflows/build.yml`: בנייה, חתימה בתעודה עצמית ופרסום ב-Releases.

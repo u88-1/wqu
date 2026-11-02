@@ -91,9 +91,10 @@ public static class Jobs
         string mime = ext == ".mp4" ? "video/mp4" : AudioMime(ext);
         string? temp = null;
 
-        if ((ext is ".m4a" or ".wma" or ".amr") && AudioConverter != null)
+        // MP4: send only the audio track (about 5 MB for 3 minutes) instead of the whole video: far faster to upload and process.
+        if ((ext is ".m4a" or ".wma" or ".amr" or ".mp4") && AudioConverter != null)
         {
-            status("ממיר את ההקלטה לפורמט נתמך...");
+            status(ext == ".mp4" ? "מחלץ את השמע מהסרטון..." : "ממיר את ההקלטה לפורמט נתמך...");
             temp = AudioConverter(file);
             if (temp != null) { upPath = temp; mime = "audio/wav"; }
         }

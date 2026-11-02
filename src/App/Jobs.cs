@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace GeminiMenu;
@@ -48,6 +49,14 @@ public static class Jobs
         "קטע שאינו ברור סמן [לא ברור]. אם אין בהקלטה או בסרטון דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
 
+    const string ChunkPrompt =
+        "הקובץ המצורף הוא קטע מתוך הקלטה ארוכה, וייתכן שחלקים בתחילתו או בסופו חופפים לקטעים סמוכים. " +
+        "תמלל במלואו את כל הדיבור שנשמע בקטע המצורף, כולל הדיבור שבחפיפה. אל תשמיט מילים בתחילת הקטע או בסופו. " +
+        "תמלל מילה במילה ובשפה שבה נאמרו הדברים, והשתמש בתוויות דוברים ('דובר 1:', 'דובר 2:' וכן הלאה). " +
+        "קטע שאינו ברור סמן [לא ברור]. אם אין דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
+        "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
+
+    static readonly Regex TranscriptWord = new(@"\S+", RegexOptions.Compiled);
     static string AudioMime(string ext) => ext switch
     {
         ".wav" => "audio/wav",
@@ -63,6 +72,16 @@ public static class Jobs
 
     static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct)
     {
+        TimeSpan duration;
+        try { duration = AudioConvert.GetDuration(file); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
+        {
+            duration = TimeSpan.Zero;
+        }
+
+        if (duration > TimeSpan.FromSeconds(300))
+            return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
+
         string upPath = file;
         string mime = ext == ".mp4" ? "video/mp4" : AudioMime(ext);
         string? temp = null;
@@ -88,14 +107,129 @@ public static class Jobs
             };
             var cfg = new JsonObject { ["maxOutputTokens"] = 65000 };
             var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
+            if (res.FinishReason == "MAX_TOKENS")
+            {
+                if (up != null) { await client.DeleteFileAsync(up).ConfigureAwait(false); up = null; }
+                if (temp != null) { try { File.Delete(temp); } catch { } temp = null; }
+                status("התמלול נקטע. מחלק לקטעים קצרים יותר ומנסה שוב...");
+                return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
+            }
 
-            string? note = res.FinishReason == "MAX_TOKENS" ? "ההקלטה ארוכה מאוד, והתמלול נקטע בסופו בגלל מגבלת אורך של Gemini." : null;
-            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(res.Text), res.Text, note);
+            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(res.Text), res.Text, null);
         }
         finally
         {
             if (up != null) await client.DeleteFileAsync(up).ConfigureAwait(false);
             if (temp != null) try { File.Delete(temp); } catch { }
+        }
+    }
+
+    static async Task<JobResult> TranscribeChunksAsync(string file, string name, GeminiClient client, Action<string> status, CancellationToken ct)
+    {
+        status("מכין קטעים לתמלול...");
+        AudioChunkSet chunks;
+        try { chunks = AudioConvert.CreateChunks(file); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
+        {
+            throw new AppException(ErrKind.FileProblem,
+                "לא ניתן לפצל את קובץ המדיה במחשב הזה. נסה לשמור אותו כ-MP3 או WAV ולתמלל שוב.",
+                technical: ex.Message, inner: ex);
+        }
+        using var chunkSet = chunks;
+        if (chunkSet.Chunks.Count == 0)
+            throw new AppException(ErrKind.FileProblem, "לא ניתן לחלק את המדיה לקטעי תמלול.");
+        var pending = new LinkedList<AudioChunk>(chunkSet.Chunks);
+        var transcript = new StringBuilder();
+        int total = pending.Count;
+        int completed = 0;
+        bool splitForTruncation = false;
+
+        while (pending.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var chunk = pending.First!.Value;
+            pending.RemoveFirst();
+            status($"מתמלל קטע {completed + 1} מתוך {total}...");
+
+            var result = await TranscribeChunkAsync(chunk.Path, ChunkPrompt, client, ct).ConfigureAwait(false);
+            if (result.FinishReason == "MAX_TOKENS")
+            {
+                splitForTruncation = true;
+                var smaller = chunkSet.Split(chunk);
+                total += smaller.Count - 1;
+                for (int i = smaller.Count - 1; i >= 0; i--)
+                    pending.AddFirst(smaller[i]);
+                continue;
+            }
+
+            var merged = MergeChunkTranscripts(transcript.ToString(), result.Text);
+            transcript.Clear().Append(merged);
+            completed++;
+        }
+
+        var text = transcript.ToString().Trim();
+        var note = splitForTruncation
+            ? "קטעים ארוכים שנחתכו חולקו אוטומטית לקטעים קצרים יותר."
+            : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.";
+        return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, note);
+    }
+
+    static string MergeChunkTranscripts(string previous, string next)
+    {
+        if (string.IsNullOrWhiteSpace(previous)) return next.Trim();
+        if (string.IsNullOrWhiteSpace(next)) return previous;
+
+        var left = TranscriptWord.Matches(previous).Cast<Match>().ToArray();
+        var right = TranscriptWord.Matches(next).Cast<Match>().ToArray();
+        int maxOverlap = Math.Min(80, Math.Min(left.Length, right.Length));
+        for (int count = maxOverlap; count >= 3; count--)
+        {
+            bool matches = true;
+            for (int i = 0; i < count; i++)
+            {
+                var leftWord = NormalizeTranscriptWord(left[left.Length - count + i].Value);
+                var rightWord = NormalizeTranscriptWord(right[i].Value);
+                if (leftWord.Length == 0 || !string.Equals(leftWord, rightWord, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                int nextStart = right[count - 1].Index + right[count - 1].Length;
+                while (nextStart < next.Length && char.IsWhiteSpace(next[nextStart])) nextStart++;
+                var remainder = next[nextStart..].TrimStart();
+                return remainder.Length == 0
+                    ? previous.TrimEnd()
+                    : previous.TrimEnd() + Environment.NewLine + remainder;
+            }
+        }
+
+        return previous.TrimEnd() + Environment.NewLine + Environment.NewLine + next.TrimStart();
+    }
+
+    static string NormalizeTranscriptWord(string word) =>
+        string.Concat(word.Where(char.IsLetterOrDigit));
+
+    static async Task<GenResult> TranscribeChunkAsync(string path, string prompt, GeminiClient client, CancellationToken ct)
+    {
+        UploadedFile? up = null;
+        try
+        {
+            up = await client.UploadAsync(path, "audio/wav", ct).ConfigureAwait(false);
+            var parts = new JsonArray
+            {
+                new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } },
+                new JsonObject { ["text"] = prompt },
+            };
+            var cfg = new JsonObject { ["maxOutputTokens"] = 65000 };
+            return await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (up != null) await client.DeleteFileAsync(up).ConfigureAwait(false);
         }
     }
 

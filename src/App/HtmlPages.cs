@@ -172,7 +172,7 @@ btn.addEventListener('click',async()=>{
                     break;
                 case ErrKind.Blocked:
                     what = "Gemini לא החזיר תוצאה";
-                    happened = "התשובה נחסמה או שהתקבלה ריקה. זה קורה לעיתים בגלל מסנני תוכן, או כשאין בקובץ תוכן שאפשר לעבד.";
+                    happened = ae.Message;
                     todo.Add("נסה שוב. לפעמים הניסיון השני מצליח.");
                     todo.Add("ודא שיש בקובץ דיבור או טקסט ברור.");
                     break;

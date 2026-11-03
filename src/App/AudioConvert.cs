@@ -94,7 +94,7 @@ public static class AudioConvert
         return reader.TotalTime;
     }
 
-    public static AudioChunkSet CreateChunks(string input)
+    public static AudioChunkSet CreateChunks(string input, int chunkSeconds = ChunkSeconds)
     {
         var directory = Path.Combine(Path.GetTempPath(), "GeminiMenu_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -109,7 +109,7 @@ public static class AudioConvert
             using (var wav = new WaveFileReader(wavPath))
             {
                 var duration = wav.TotalTime;
-                var coreLength = TimeSpan.FromSeconds(ChunkSeconds);
+                var coreLength = TimeSpan.FromSeconds(chunkSeconds);
                 var overlap = TimeSpan.FromSeconds(ChunkOverlapSeconds);
                 for (var start = TimeSpan.Zero; start < duration; start += coreLength)
                 {

@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <!-- Built by the GitHub workflow: menu DLL, signed sparse package, certificate, icons. -->
     <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
     <EmbeddedResource Include="..\..\package\assets\mic.ico" LogicalName="mic.ico" />

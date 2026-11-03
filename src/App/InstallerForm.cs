@@ -16,6 +16,7 @@ public sealed class InstallerForm : Form
     readonly CheckBox _show = new();
     readonly Button _install = new();
     readonly Button _uninstall = new();
+    readonly Button _settings = new();
     readonly TextBox _log = new();
     readonly ProgressBar _bar = new();
 
@@ -99,7 +100,7 @@ public sealed class InstallerForm : Form
 
         var note = new Label
         {
-            Text = "המפתח נשמר ב-AppData ונשאר גם אחרי הסרה והתקנה מחדש.",
+            Text = "המפתח נשמר מוצפן ב-AppData ונשאר גם אחרי הסרה והתקנה מחדש.",
             ForeColor = Muted,
             Font = new Font("Segoe UI", 9f),
             Bounds = new Rectangle(20, 224, 472, 22),
@@ -115,6 +116,10 @@ public sealed class InstallerForm : Form
         _uninstall.Bounds = new Rectangle(24, 398, 150, 46);
         _uninstall.Click += async (_, _) => await Run(() => Installer.Uninstall(Log), validateKey: false);
 
+        StyleButton(_settings, "הגדרות...", primary: false);
+        _settings.Bounds = new Rectangle(190, 398, 110, 46);
+        _settings.Click += (_, _) => { using var f = new SettingsForm(); f.ShowDialog(this); };
+
         _bar.Style = ProgressBarStyle.Marquee;
         _bar.MarqueeAnimationSpeed = 30;
         _bar.Visible = false;
@@ -129,7 +134,7 @@ public sealed class InstallerForm : Form
         _log.Font = new Font("Segoe UI", 9.5f);
         _log.Bounds = new Rectangle(24, 472, 512, 112);
 
-        Controls.AddRange(new Control[] { header, card, _install, _uninstall, _bar, _log });
+        Controls.AddRange(new Control[] { header, card, _install, _uninstall, _settings, _bar, _log });
         Log("מוכן. הדבק מפתח ולחץ \"התקן / עדכן\".");
     }
 
@@ -166,7 +171,7 @@ public sealed class InstallerForm : Form
 
     async Task Run(Action action, bool validateKey)
     {
-        _install.Enabled = _uninstall.Enabled = false;
+        _install.Enabled = _uninstall.Enabled = _settings.Enabled = false;
         _bar.Visible = true;
         try
         {
@@ -191,7 +196,7 @@ public sealed class InstallerForm : Form
         finally
         {
             _bar.Visible = false;
-            _install.Enabled = _uninstall.Enabled = true;
+            _install.Enabled = _uninstall.Enabled = _settings.Enabled = true;
         }
     }
 }

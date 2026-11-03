@@ -4,7 +4,7 @@ using System.Windows.Forms;
 
 namespace GeminiMenu;
 
-public enum ResultFormat { Html, Text, Both }
+public enum ResultFormat { Html, Text, Both, Srt }
 
 /// <summary>Small always-on-top progress window shown while Gemini works.</summary>
 public sealed class WaitForm : Form
@@ -15,6 +15,7 @@ public sealed class WaitForm : Form
     readonly ComboBox _format = new();
     readonly ProgressBar _bar = new();
     readonly Button _cancel = new();
+    readonly LinkLabel _update = new();
     readonly System.Windows.Forms.Timer _clock = new() { Interval = 1000 };
     readonly Stopwatch _elapsed = Stopwatch.StartNew();
     public event Action? CancelRequested;
@@ -23,13 +24,14 @@ public sealed class WaitForm : Form
     {
         1 => ResultFormat.Text,
         2 => ResultFormat.Both,
+        3 => ResultFormat.Srt,
         _ => ResultFormat.Html,
     };
 
     static readonly Color Accent = Color.FromArgb(46, 110, 235);
     static readonly Color Muted = Color.FromArgb(102, 112, 133);
 
-    public WaitForm(string title, string fileName)
+    public WaitForm(string title, string fileName, bool allowSrt = false, string defaultFormat = "html")
     {
         Text = "Gemini – " + title;
         RightToLeft = RightToLeft.Yes;
@@ -39,7 +41,7 @@ public sealed class WaitForm : Form
         MinimizeBox = true;
         TopMost = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(480, 270);
+        ClientSize = new Size(480, 300);
         Font = new Font("Segoe UI", 10f);
         BackColor = Color.White;
         ShowInTaskbar = true;
@@ -93,7 +95,8 @@ public sealed class WaitForm : Form
         _format.DropDownStyle = ComboBoxStyle.DropDownList;
         _format.FlatStyle = FlatStyle.Flat;
         _format.Items.AddRange(new object[] { "דף HTML (נפתח בדפדפן)", "קובץ טקסט (TXT)", "גם HTML וגם TXT" });
-        _format.SelectedIndex = 0;
+        if (allowSrt) _format.Items.Add("כתוביות (SRT)");
+        _format.SelectedIndex = defaultFormat switch { "text" => 1, "both" => 2, "srt" when allowSrt => 3, _ => 0 };
         _format.SetBounds(92, 183, 372, 28);
 
         _cancel.Text = "ביטול";
@@ -113,7 +116,16 @@ public sealed class WaitForm : Form
         };
         minimizeHint.SetBounds(124, 226, 340, 30);
 
-        Controls.AddRange(new Control[] { header, _status, _bar, _elapsedLabel, formatLabel, _format, _cancel, minimizeHint });
+        _update.Visible = false;
+        _update.LinkColor = Accent;
+        _update.TextAlign = ContentAlignment.MiddleRight;
+        _update.SetBounds(16, 266, 448, 24);
+        _update.LinkClicked += (_, _) =>
+        {
+            try { if (_update.Tag is string url) Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        };
+
+        Controls.AddRange(new Control[] { header, _status, _bar, _elapsedLabel, formatLabel, _format, _cancel, minimizeHint, _update });
         _clock.Tick += (_, _) => UpdateElapsed();
         _clock.Start();
         FormClosed += (_, _) => { _clock.Stop(); _clock.Dispose(); };
@@ -122,6 +134,16 @@ public sealed class WaitForm : Form
 
     static readonly System.Text.RegularExpressions.Regex ChunkProgress =
         new(@"קטע (\d+) מתוך (\d+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Shows a small "new version available" link at the bottom of the window.</summary>
+    public void ShowUpdate(string text, string url)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { try { BeginInvoke(() => ShowUpdate(text, url)); } catch { } return; }
+        _update.Text = text;
+        _update.Tag = url;
+        _update.Visible = true;
+    }
 
     public void SetStatus(string text)
     {

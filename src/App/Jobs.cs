@@ -8,6 +8,13 @@ namespace GeminiMenu;
 
 public enum JobKind { Transcribe, Summarize }
 
+/// <summary>Per-run options taken from the settings window.</summary>
+public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal")
+{
+    public static JobOptions From(AppConfig c) =>
+        new(c.Timestamps, Math.Clamp(c.ParallelChunks, 1, 4), Math.Clamp(c.ChunkSeconds, 60, 300), c.SummaryDetail);
+}
+
 public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null);
 
 public static class Jobs
@@ -28,8 +35,9 @@ public static class Jobs
 
     static Jobs() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient client, Action<string> status, CancellationToken ct)
+    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions? options = null)
     {
+        options ??= new JobOptions();
         if (!File.Exists(file)) throw new AppException(ErrKind.FileProblem, "הקובץ לא נמצא: " + file);
         var ext = Path.GetExtension(file).ToLowerInvariant();
         var name = Path.GetFileName(file);
@@ -37,30 +45,67 @@ public static class Jobs
         if (kind == JobKind.Transcribe)
         {
             if (!TranscriptionExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו קובץ שמע או וידאו נתמך: " + ext);
-            return await TranscribeAsync(file, ext, name, client, status, ct).ConfigureAwait(false);
+            return await TranscribeAsync(file, ext, name, client, status, ct, options).ConfigureAwait(false);
         }
         if (!DocExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו נתמך לסיכום: " + ext);
-        return await SummarizeAsync(file, ext, name, client, status, ct).ConfigureAwait(false);
+        return await SummarizeAsync(file, ext, name, client, status, ct, options).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ transcription
 
-    const string TranscribePrompt =
+    static string TimestampRule(bool ts) => ts
+        ? "בתחילת כל משפט או תור דיבור, ולפחות כל 10 עד 15 שניות, התחל שורה חדשה עם חותמת זמן בפורמט [דקות:שניות], יחסית לתחילת הקובץ המצורף, למשל: [03:25] דובר 1: ... "
+        : "";
+
+    static string TranscribePrompt(bool ts) =>
         "תמלל את הדיבור שבהקלטה או בסרטון המצורפים במלואו, מילה במילה, בשפה שבה נאמרו הדברים (דיבור בעברית יתומלל בעברית). " +
         "אל תסכם, אל תתרגם ואל תוסיף הערות משלך. אין מגבלת אורך: תמלל עד סוף ההקלטה ואל תקצר ואל תדלג. " +
         "אם יש כמה דוברים, התחל כל תור דיבור בשורה חדשה עם התווית 'דובר 1:', 'דובר 2:' וכן הלאה. " +
+        TimestampRule(ts) +
         "קטע שאינו ברור סמן [לא ברור]. אם אין בהקלטה או בסרטון דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
 
-    const string ChunkPrompt =
+    static string ChunkPrompt(bool ts, string context) =>
         "הקובץ המצורף הוא קטע מתוך הקלטה ארוכה, וייתכן שחלקים בתחילתו או בסופו חופפים לקטעים סמוכים. " +
         "תמלל במלואו את כל הדיבור שנשמע בקטע המצורף, כולל הדיבור שבחפיפה. אל תשמיט מילים בתחילת הקטע או בסופו. " +
         "אין מגבלת אורך: תמלל כל מילה עד סוף הקטע. אל תקצר, אל תדלג, ואל תכתוב שהקובץ ארוך מדי או שתמשיך בהמשך. " +
         "תמלל מילה במילה ובשפה שבה נאמרו הדברים, והשתמש בתוויות דוברים ('דובר 1:', 'דובר 2:' וכן הלאה). " +
+        TimestampRule(ts) +
+        (context.Length > 0
+            ? "להמשכיות בלבד, אלו השורות האחרונות מהקטע הקודם. אל תתמלל אותן שוב, והשתמש באותן תוויות דוברים עבור אותם אנשים:\n<<<\n" + context + "\n>>>\n"
+            : "") +
         "קטע שאינו ברור סמן [לא ברור]. אם אין דיבור כלל, כתוב רק: [לא זוהה דיבור]. " +
         "החזר טקסט פשוט בלבד, בלי עיצוב, כותרות או הקדמה.";
 
     static readonly Regex TranscriptWord = new(@"\S+", RegexOptions.Compiled);
+    static readonly Regex TsRegex = new(@"\[(\d{1,3}):(\d{2})(?::(\d{2}))?\]", RegexOptions.Compiled);
+    static readonly Regex TsToken = new(@"^\[\d{1,3}:\d{2}(?::\d{2})?\]$", RegexOptions.Compiled);
+
+    /// <summary>Rewrites [mm:ss] / [h:mm:ss] stamps (relative to the chunk file) as absolute [HH:MM:SS].</summary>
+    internal static string NormalizeTimestamps(string text, TimeSpan offset) =>
+        TsRegex.Replace(text, m =>
+        {
+            int a = int.Parse(m.Groups[1].Value), b = int.Parse(m.Groups[2].Value);
+            var t = m.Groups[3].Success
+                ? TimeSpan.FromSeconds(a * 3600.0 + b * 60 + int.Parse(m.Groups[3].Value))
+                : TimeSpan.FromSeconds(a * 60.0 + b);
+            t += offset;
+            return $"[{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}]";
+        });
+
+    /// <summary>Last few lines of the transcript without timestamps: given to the next chunk so speaker labels stay consistent.</summary>
+    internal static string ContextTail(string transcript)
+    {
+        var s = TsRegex.Replace(transcript ?? "", "").Trim();
+        if (s.Length > 500)
+        {
+            s = s[^500..];
+            int nl = s.IndexOf('\n'); // drop the cut-off first line
+            if (nl > 0 && nl < 200) s = s[(nl + 1)..];
+        }
+        return s.Trim();
+    }
+
     static string AudioMime(string ext) => ext switch
     {
         ".wav" => "audio/wav",
@@ -74,7 +119,7 @@ public static class Jobs
         _ => "application/octet-stream",
     };
 
-    static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
     {
         TimeSpan duration;
         try { duration = AudioConvert.GetDuration(file); }
@@ -84,8 +129,8 @@ public static class Jobs
         }
 
         bool unknownButBig = duration == TimeSpan.Zero && new FileInfo(file).Length > UnknownDurationChunkBytes;
-        if (duration > TimeSpan.FromSeconds(AudioConvert.ChunkSeconds) || unknownButBig)
-            return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
+        if (duration > TimeSpan.FromSeconds(o.ChunkSeconds) || unknownButBig)
+            return await TranscribeChunksAsync(file, name, client, status, ct, o).ConfigureAwait(false);
 
         string upPath = file;
         string mime = ext == ".mp4" ? "video/mp4" : AudioMime(ext);
@@ -109,7 +154,7 @@ public static class Jobs
             var parts = new JsonArray
             {
                 new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } },
-                new JsonObject { ["text"] = TranscribePrompt },
+                new JsonObject { ["text"] = TranscribePrompt(o.Timestamps) },
             };
             var cfg = new JsonObject { ["maxOutputTokens"] = MaxTranscriptTokens };
             var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
@@ -118,10 +163,11 @@ public static class Jobs
                 if (up != null) { await client.DeleteFileAsync(up).ConfigureAwait(false); up = null; }
                 if (temp != null) { try { File.Delete(temp); } catch { } temp = null; }
                 status("התמלול נראה חלקי או נקטע. מחלק לקטעים קצרים יותר ומנסה שוב...");
-                return await TranscribeChunksAsync(file, name, client, status, ct).ConfigureAwait(false);
+                return await TranscribeChunksAsync(file, name, client, status, ct, o).ConfigureAwait(false);
             }
 
-            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(res.Text), res.Text, null);
+            var text = o.Timestamps ? NormalizeTimestamps(res.Text, TimeSpan.Zero) : res.Text;
+            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, null);
         }
         finally
         {
@@ -130,107 +176,123 @@ public static class Jobs
         }
     }
 
-    static async Task<JobResult> TranscribeChunksAsync(string file, string name, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<JobResult> TranscribeChunksAsync(string file, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
     {
         status("מכין קטעים לתמלול...");
-        AudioChunkSet chunks;
-        try { chunks = AudioConvert.CreateChunks(file); }
+        AudioChunkSet chunkSet;
+        try { chunkSet = AudioConvert.CreateChunks(file, o.ChunkSeconds); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
         {
-            throw new AppException(ErrKind.FileProblem,
-                "לא ניתן לפצל את קובץ המדיה במחשב הזה. נסה לשמור אותו כ-MP3 או WAV ולתמלל שוב.",
-                technical: ex.Message, inner: ex);
-        }
-        using var chunkSet = chunks;
-        if (chunkSet.Chunks.Count == 0)
-            throw new AppException(ErrKind.FileProblem, "לא ניתן לחלק את המדיה לקטעי תמלול.");
-        var pending = new LinkedList<AudioChunk>(chunkSet.Chunks);
-        var transcript = new StringBuilder();
-        int total = pending.Count;
-        int completed = 0;
-        bool split = false;
-        var retries = new Dictionary<string, int>();
-        var gaps = new List<string>();
-        string? abortReason = null;
-
-        void Append(string text) => transcript.Clear().Append(MergeChunkTranscripts(transcript.ToString(), text));
-        void Gap(AudioChunk c)
-        {
-            var range = $"{Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)}";
-            gaps.Add(range);
-            Append($"[⚠ הקטע {range} לא תומלל במלואו]");
-        }
-        void SplitAndQueue(AudioChunk c)
-        {
-            split = true;
-            var smaller = chunkSet.Split(c);
-            total += smaller.Count - 1;
-            for (int i = smaller.Count - 1; i >= 0; i--) pending.AddFirst(smaller[i]);
+            throw new AppException(ErrKind.FileProblem, "לא הצלחתי לקרוא את ההקלטה כדי לחלק אותה לקטעים.", technical: ex.Message, inner: ex);
         }
 
-        while (pending.Count > 0)
+        using (chunkSet)
         {
-            ct.ThrowIfCancellationRequested();
-            var chunk = pending.First!.Value;
-            pending.RemoveFirst();
-            status($"מתמלל קטע {completed + 1} מתוך {total} ({Fmt(chunk.AbsStart)}–{Fmt(chunk.AbsEnd)})...");
+            var sync = new object();
+            using var gate = new SemaphoreSlim(Math.Clamp(o.Parallel, 1, 4));
+            int total = chunkSet.Chunks.Count, completed = 0, successes = 0;
+            bool split = false;
+            string? fatal = null;
+            AppException? firstError = null;
+            var gaps = new List<string>();
 
-            GenResult result;
-            try
+            string GapText(AudioChunk c)
             {
-                result = await TranscribeChunkAsync(chunk.Path, ChunkPrompt, client, ct).ConfigureAwait(false);
-            }
-            catch (AppException e) when (transcript.Length > 0 && e.Kind is not (ErrKind.NoKey or ErrKind.BadKey))
-            {
-                // Keep everything transcribed so far instead of throwing it away.
-                abortReason = e.Message;
-                Append($"[⚠ התמלול הופסק כאן ({Fmt(chunk.AbsStart)}): {e.Message}]");
-                Log.Write("transcription aborted, partial result kept: " + (e.Technical ?? e.Message));
-                break;
+                var range = $"{Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)}";
+                lock (sync) gaps.Add(range);
+                return $"[⚠ הקטע {range} לא תומלל במלואו]";
             }
 
-            if (result.FinishReason == "MAX_TOKENS")
+            async Task<string> SplitOrGap(AudioChunk c, string context)
             {
-                if (chunkSet.CanSplit(chunk)) SplitAndQueue(chunk);
-                else { Gap(chunk); completed++; }
-                continue;
+                if (!chunkSet.CanSplit(c)) { lock (sync) completed++; return GapText(c); }
+                List<AudioChunk> halves;
+                lock (sync) { split = true; total++; halves = chunkSet.Split(c); }
+                var first = await Process(halves[0], context, 0).ConfigureAwait(false);
+                var second = await Process(halves[1], ContextTail(MergeChunkTranscripts(context, first)), 0).ConfigureAwait(false);
+                return MergeChunkTranscripts(first, second);
             }
 
-            var verdict = Evaluate(result.Text, chunk.CoreDuration);
-            if (verdict != ChunkVerdict.Ok)
+            async Task<string> Process(AudioChunk c, string context, int attempt)
             {
-                Log.Write($"chunk {Fmt(chunk.AbsStart)} looks {verdict}: {TranscriptWord.Matches(result.Text).Count} words in {chunk.CoreDuration.TotalSeconds:0}s");
-                int tries = retries.GetValueOrDefault(chunk.Path);
-                if (tries < 1)
+                ct.ThrowIfCancellationRequested();
+                bool stopped;
+                lock (sync) stopped = fatal != null;
+                if (stopped) { lock (sync) completed++; return GapText(c); }
+
+                GenResult r;
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+                try
                 {
-                    retries[chunk.Path] = tries + 1;
-                    status("התמלול של הקטע נראה חלקי. מנסה שוב...");
-                    pending.AddFirst(chunk);
-                    continue;
+                    int shown;
+                    lock (sync) shown = Math.Min(completed + 1, total);
+                    status($"מתמלל קטע {shown} מתוך {total} ({Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)})...");
+                    r = await TranscribeChunkAsync(c.Path, ChunkPrompt(o.Timestamps, context), client, ct).ConfigureAwait(false);
                 }
-                if (verdict == ChunkVerdict.Excuse)
+                catch (AppException e) when (e.Kind is not (ErrKind.NoKey or ErrKind.BadKey))
                 {
-                    if (chunkSet.CanSplit(chunk)) SplitAndQueue(chunk);
-                    else { Gap(chunk); completed++; }
-                    continue;
+                    Log.Write($"chunk {Fmt(c.AbsStart)} failed: {e.Technical ?? e.Message}");
+                    lock (sync)
+                    {
+                        firstError ??= e;
+                        // Quota / overload / network problems will hit every following chunk too: stop starting new ones.
+                        if (e.Kind is ErrKind.Quota or ErrKind.Overloaded or ErrKind.Network) fatal ??= e.Message;
+                        completed++;
+                    }
+                    return GapText(c);
                 }
-                // Short but no excuse text, even after a retry: probably real silence/music. Keep it.
+                finally { gate.Release(); }
+
+                if (r.FinishReason == "MAX_TOKENS") return await SplitOrGap(c, context).ConfigureAwait(false);
+
+                var verdict = Evaluate(r.Text, c.CoreDuration);
+                if (verdict != ChunkVerdict.Ok)
+                {
+                    Log.Write($"chunk {Fmt(c.AbsStart)} looks {verdict}: {TranscriptWord.Matches(r.Text).Count} words in {c.CoreDuration.TotalSeconds:0}s");
+                    if (attempt < 1)
+                    {
+                        status("התמלול של הקטע נראה חלקי. מנסה שוב...");
+                        return await Process(c, context, attempt + 1).ConfigureAwait(false);
+                    }
+                    if (verdict == ChunkVerdict.Excuse) return await SplitOrGap(c, context).ConfigureAwait(false);
+                    // Short but no excuse text, even after a retry: probably real silence/music. Keep it.
+                }
+
+                lock (sync) { completed++; successes++; }
+                return o.Timestamps ? NormalizeTimestamps(r.Text, c.AbsStart - c.CoreStart) : r.Text;
             }
 
-            Append(result.Text);
-            completed++;
-        }
+            string merged = "";
+            if (o.Parallel <= 1)
+            {
+                // In order: each chunk sees the end of the previous one, so speaker labels stay consistent.
+                foreach (var c in chunkSet.Chunks.ToList())
+                {
+                    var text = await Process(c, ContextTail(merged), 0).ConfigureAwait(false);
+                    merged = MergeChunkTranscripts(merged, text);
+                }
+            }
+            else
+            {
+                var texts = await Task.WhenAll(chunkSet.Chunks.ToList().Select(c => Process(c, "", 0))).ConfigureAwait(false);
+                foreach (var t in texts) merged = MergeChunkTranscripts(merged, t);
+            }
 
-        var text = transcript.ToString().Trim();
-        var notes = new List<string>
-        {
-            split
-                ? "קטעים שנראו חלקיים או נקטעו חולקו אוטומטית לקטעים קצרים יותר."
-                : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.",
-        };
-        if (gaps.Count > 0) notes.Add("קטעים שלא תומללו במלואם: " + string.Join(", ", gaps) + ".");
-        if (abortReason != null) notes.Add("התמלול הופסק באמצע (" + abortReason + "). מה שתומלל עד כה נשמר.");
-        return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, string.Join(" ", notes));
+            if (successes == 0)
+                throw firstError ?? new AppException(ErrKind.Blocked, "לא הצלחתי לתמלל את ההקלטה.");
+
+            var final = merged.Trim();
+            var notes = new List<string>
+            {
+                split
+                    ? "קטעים שנראו חלקיים או נקטעו חולקו אוטומטית לקטעים קצרים יותר."
+                    : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.",
+            };
+            if (o.Parallel > 1) notes.Add("הקטעים תומללו במקביל, ולכן תוויות הדוברים עלולות להתחלף בין קטעים.");
+            if (gaps.Count > 0) notes.Add("קטעים שלא תומללו במלואם: " + string.Join(", ", gaps) + ".");
+            if (fatal != null) notes.Add("התמלול הופסק באמצע (" + fatal + "). מה שתומלל עד כה נשמר.");
+            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(final), final, string.Join(" ", notes));
+        }
     }
 
     // ------------------------------------------------------------------ output sanity check
@@ -247,7 +309,7 @@ public static class Jobs
 
     internal static ChunkVerdict Evaluate(string text, TimeSpan duration)
     {
-        var t = text.Trim();
+        var t = TsRegex.Replace(text, "").Trim();
         if (t.StartsWith("[לא זוהה דיבור]") && t.Length < 40) return ChunkVerdict.Ok;
         if (duration < TimeSpan.FromSeconds(45)) return ChunkVerdict.Ok; // too short to judge
         double wpm = TranscriptWord.Matches(t).Count / duration.TotalMinutes;
@@ -258,13 +320,14 @@ public static class Jobs
 
     static string Fmt(TimeSpan t) => $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}";
 
-    static string MergeChunkTranscripts(string previous, string next)
+    internal static string MergeChunkTranscripts(string previous, string next)
     {
         if (string.IsNullOrWhiteSpace(previous)) return next.Trim();
         if (string.IsNullOrWhiteSpace(next)) return previous;
 
-        var left = TranscriptWord.Matches(previous).Cast<Match>().ToArray();
-        var right = TranscriptWord.Matches(next).Cast<Match>().ToArray();
+        // Timestamps differ between the two copies of the overlap, so they are ignored when matching words.
+        var left = TranscriptWord.Matches(previous).Cast<Match>().Where(m => !TsToken.IsMatch(m.Value)).ToArray();
+        var right = TranscriptWord.Matches(next).Cast<Match>().Where(m => !TsToken.IsMatch(m.Value)).ToArray();
         int maxOverlap = Math.Min(80, Math.Min(left.Length, right.Length));
         for (int count = maxOverlap; count >= 3; count--)
         {
@@ -319,14 +382,27 @@ public static class Jobs
 
     // ------------------------------------------------------------------ summarization
 
-    const string SummaryPrompt =
-        "אתה מסכם מסמכים. קרא את המסמך וכתוב סיכום בעברית (גם אם המסמך בשפה אחרת). " +
-        "oneLine: משפט אחד קצר שמסביר על מה המסמך. " +
-        "mainPoints: הנקודות העיקריות במסמך, בין 3 ל-10 נקודות קצרות וברורות. " +
-        "actions: פעולות שהמסמך מבקש או מחייב לבצע, ומי אחראי עליהן אם נכתב (מערך ריק אם אין). " +
-        "dates: תאריכים, מועדים ומועדי יעד שמופיעים במסמך, כל פריט עם ההקשר שלו (מערך ריק אם אין). " +
-        "amounts: סכומי כסף, מחירים וכמויות חשובות, כל פריט עם ההקשר שלו ועם המטבע (מערך ריק אם אין). " +
-        "אל תמציא מידע שאינו מופיע במסמך.";
+    /// <summary>Documents longer than this are summarized in stages (piece by piece, then merged).</summary>
+    const int StageChars = 200_000;
+    const int PieceChars = 150_000;
+
+    static string SummaryPrompt(string detail)
+    {
+        var points = detail switch
+        {
+            "short" => "בין 3 ל-5 נקודות קצרות מאוד",
+            "detailed" => "בין 8 ל-20 נקודות מפורטות, כל אחת עם ההקשר והנימוקים שלה",
+            _ => "בין 3 ל-10 נקודות קצרות וברורות",
+        };
+        return
+            "אתה מסכם מסמכים. קרא את המסמך וכתוב סיכום בעברית (גם אם המסמך בשפה אחרת). " +
+            "oneLine: משפט אחד קצר שמסביר על מה המסמך. " +
+            $"mainPoints: הנקודות העיקריות במסמך, {points}. " +
+            "actions: פעולות שהמסמך מבקש או מחייב לבצע, ומי אחראי עליהן אם נכתב (מערך ריק אם אין). " +
+            "dates: תאריכים, מועדים ומועדי יעד שמופיעים במסמך, כל פריט עם ההקשר שלו (מערך ריק אם אין). " +
+            "amounts: סכומי כסף, מחירים וכמויות חשובות, כל פריט עם ההקשר שלו ועם המטבע (מערך ריק אם אין). " +
+            "אל תמציא מידע שאינו מופיע במסמך.";
+    }
 
     static JsonObject SummarySchema()
     {
@@ -346,9 +422,72 @@ public static class Jobs
         };
     }
 
-    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<SummaryData> RunSummaryAsync(JsonArray parts, GeminiClient client, CancellationToken ct)
     {
-        var parts = new JsonArray { new JsonObject { ["text"] = SummaryPrompt } };
+        var cfg = new JsonObject
+        {
+            ["maxOutputTokens"] = 8192,
+            ["responseMimeType"] = "application/json",
+            ["responseSchema"] = SummarySchema(),
+        };
+        var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: false, ct).ConfigureAwait(false);
+        try { return SummaryData.Parse(res.Text); }
+        catch (Exception ex)
+        {
+            throw new AppException(ErrKind.Blocked, "Gemini החזיר סיכום במבנה לא צפוי. נסה שוב.", technical: ex.Message + "\n" + res.Text, inner: ex);
+        }
+    }
+
+    internal static List<string> SplitText(string text, int size)
+    {
+        var pieces = new List<string>();
+        int pos = 0;
+        while (pos < text.Length)
+        {
+            int len = Math.Min(size, text.Length - pos);
+            if (pos + len < text.Length)
+            {
+                // Prefer to cut at a line break in the last fifth of the piece.
+                int nl = text.LastIndexOf('\n', pos + len - 1, Math.Max(1, len / 5));
+                if (nl > pos) len = nl - pos + 1;
+            }
+            pieces.Add(text.Substring(pos, len));
+            pos += len;
+        }
+        return pieces;
+    }
+
+    static async Task<SummaryData> SummarizeStagedAsync(string text, JobOptions o, GeminiClient client, Action<string> status, CancellationToken ct)
+    {
+        var pieces = SplitText(text, PieceChars);
+        var partial = new List<SummaryData>();
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            status($"מסכם חלק {i + 1} מתוך {pieces.Count}...");
+            var parts = new JsonArray
+            {
+                new JsonObject { ["text"] = SummaryPrompt(o.SummaryDetail) },
+                new JsonObject { ["text"] = $"חלק {i + 1} מתוך {pieces.Count} של מסמך ארוך:\n\n" + pieces[i] },
+            };
+            partial.Add(await RunSummaryAsync(parts, client, ct).ConfigureAwait(false));
+        }
+
+        status("מאחד את הסיכומים לסיכום אחד...");
+        var sb = new StringBuilder();
+        for (int i = 0; i < partial.Count; i++)
+            sb.AppendLine($"--- סיכום חלק {i + 1} מתוך {partial.Count} ---").AppendLine(partial[i].ToPlainText($"חלק {i + 1}")).AppendLine();
+        var mergeParts = new JsonArray
+        {
+            new JsonObject { ["text"] = "להלן סיכומי ביניים של חלקים עוקבים של מסמך אחד גדול. אחד אותם לסיכום אחד של המסמך כולו, בלי כפילויות. " + SummaryPrompt(o.SummaryDetail) },
+            new JsonObject { ["text"] = sb.ToString() },
+        };
+        return await RunSummaryAsync(mergeParts, client, ct).ConfigureAwait(false);
+    }
+
+    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
+    {
+        var parts = new JsonArray { new JsonObject { ["text"] = SummaryPrompt(o.SummaryDetail) } };
         UploadedFile? up = null;
         string? note = null;
         try
@@ -377,26 +516,19 @@ public static class Jobs
                 if (text.Length > MaxChars)
                 {
                     text = text[..MaxChars];
-                    note = "המסמך ארוך מאוד, ולכן הסיכום מבוסס על החלק הראשון שלו בלבד.";
+                    note = "המסמך ארוך מאוד, ולכן הסיכום מבוסס על החלק הראשון שלו בלבד (כ-3 מיליון תווים).";
+                }
+                if (text.Length > StageChars)
+                {
+                    var staged = await SummarizeStagedAsync(text, o, client, status, ct).ConfigureAwait(false);
+                    var stagedNote = "המסמך ארוך, ולכן סוכם בשלבים: כל חלק סוכם בנפרד ואז אוחדו הסיכומים." + (note == null ? "" : " " + note);
+                    return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(staged), staged.ToPlainText(name), stagedNote);
                 }
                 parts.Add(new JsonObject { ["text"] = "המסמך:\n\n" + text });
             }
 
             status("מסכם...");
-            var cfg = new JsonObject
-            {
-                ["maxOutputTokens"] = 8192,
-                ["responseMimeType"] = "application/json",
-                ["responseSchema"] = SummarySchema(),
-            };
-            var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: false, ct).ConfigureAwait(false);
-
-            SummaryData data;
-            try { data = SummaryData.Parse(res.Text); }
-            catch (Exception ex)
-            {
-                throw new AppException(ErrKind.Blocked, "Gemini החזיר סיכום במבנה לא צפוי. נסה שוב.", technical: ex.Message + "\n" + res.Text, inner: ex);
-            }
+            var data = await RunSummaryAsync(parts, client, ct).ConfigureAwait(false);
             return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(data), data.ToPlainText(name), note);
         }
         finally

@@ -12,7 +12,11 @@ public static class Worker
     {
         try { SetCurrentProcessExplicitAppUserModelID("GeminiMenu.Worker"); } catch { }
         Jobs.AudioConverter = AudioConvert.ToWav;
-        var form = new WaitForm(kind == JobKind.Transcribe ? "מתמלל" : "מסכם", Path.GetFileName(file));
+        AppConfig early;
+        try { early = AppConfig.Load(); } catch { early = new AppConfig(); }
+        HtmlPages.OutputDir = early.OutputDir;
+        var form = new WaitForm(kind == JobKind.Transcribe ? "מתמלל" : "מסכם", Path.GetFileName(file),
+            allowSrt: kind == JobKind.Transcribe && early.Timestamps, defaultFormat: early.DefaultFormat);
         using var cts = new CancellationTokenSource();
         form.CancelRequested += () => cts.Cancel();
         var stopwatch = Stopwatch.StartNew();
@@ -27,9 +31,23 @@ public static class Worker
                 var cfg = AppConfig.Load();
                 if (string.IsNullOrWhiteSpace(cfg.ApiKey))
                     throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
+                HtmlPages.OutputDir = cfg.OutputDir;
+
+                // Newer release? (never blocks the job)
+                _ = Task.Run(async () =>
+                {
+                    var upd = await UpdateCheck.CheckAsync(cfg, cts.Token);
+                    if (upd != null) form.ShowUpdate($"יצאה גרסה חדשה ({upd.Tag}). לחץ כדי לפתוח את דף ההורדה.", upd.Url);
+                });
+
+                // At most N files at the same time across all windows; the rest wait here.
+                using var slot = await JobSlot.AcquireAsync(cfg.MaxConcurrentJobs, status, cts.Token);
+                stopwatch.Restart();
+
                 using var client = new GeminiClient(cfg, status);
                 client.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
-                var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, status, cts.Token));
+                var options = JobOptions.From(cfg);
+                var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, status, cts.Token, options));
                 result = result with { ProcessingTime = stopwatch.Elapsed };
                 var suffix = kind == JobKind.Transcribe ? "תמלול" : "סיכום";
                 var html = HtmlPages.ResultPage(result);
@@ -37,6 +55,7 @@ public static class Worker
                 {
                     ResultFormat.Text => HtmlPages.SaveText(file, suffix, result.PlainText),
                     ResultFormat.Both => SaveBoth(file, suffix, html, result.PlainText),
+                    ResultFormat.Srt => SaveSrt(file, suffix, html, result),
                     _ => HtmlPages.Save(file, suffix, html),
                 };
             }
@@ -60,6 +79,14 @@ public static class Worker
         Application.Run(form);
         if (outPath != null)
             Process.Start(new ProcessStartInfo(outPath) { UseShellExecute = true });
+    }
+
+    static string SaveSrt(string file, string suffix, string html, JobResult result)
+    {
+        var srt = Srt.FromTranscript(result.PlainText);
+        if (srt.Length == 0) return HtmlPages.Save(file, suffix, html); // no timestamps in the result
+        HtmlPages.SaveText(file, suffix, result.PlainText);
+        return HtmlPages.SaveSrt(file, suffix, srt);
     }
 
     static string SaveBoth(string file, string suffix, string html, string text)

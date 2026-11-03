@@ -18,6 +18,12 @@ jobs:
         with:
           arch: x64
 
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          dotnet test tests\GeminiMenu.Tests\GeminiMenu.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "unit tests failed" }
+
       - name: Build the Explorer menu DLL
         shell: cmd
         run: |
@@ -77,7 +83,7 @@ jobs:
       - name: Publish single-file app (installer + worker)
         shell: pwsh
         run: |
-          dotnet publish src\App\GeminiMenu.csproj -c Release -o out\app
+          dotnet publish src\App\GeminiMenu.csproj -c Release -o out\app -p:Version=1.0.${{ github.run_number }}
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
           Copy-Item out\app\GeminiMenu.exe out\GeminiMenu-Setup.exe
 

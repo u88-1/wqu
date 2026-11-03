@@ -84,6 +84,9 @@ public static class Installer
         using (var store = new X509Store("TrustedPeople", StoreLocation.LocalMachine))
         {
             store.Open(OpenFlags.ReadWrite);
+            // Every build used to add another certificate: remove the old ones first.
+            foreach (var old in store.Certificates.Find(X509FindType.FindBySubjectDistinguishedName, "CN=GeminiMenu", false))
+                store.Remove(old);
             store.Add(cert);
         }
 

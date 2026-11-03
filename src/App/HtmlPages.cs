@@ -11,7 +11,7 @@ public static class HtmlPages
 
     // ------------------------------------------------------------------ bodies
 
-    static readonly Regex Speaker = new(@"^(\s*(?:דובר|Speaker)\s*\d+\s*:)(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    static readonly Regex Speaker = new(@"^(\s*(?:\[\d{1,3}:\d{2}(?::\d{2})?\]\s*)?(?:דובר|Speaker)\s*\d+\s*:)(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static string TranscriptBody(string text)
     {
@@ -228,9 +228,16 @@ btn.addEventListener('click',async()=>{
     }
 
     /// <summary>Saves next to the source file; falls back to the temp folder if that folder is not writable.</summary>
+    /// <summary>Optional folder from the settings; empty = next to the source file.</summary>
+    public static string? OutputDir { get; set; }
+
     static string SaveContent(string sourceFile, string suffix, string content, string extension)
     {
         var dir = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) ?? ".";
+        if (!string.IsNullOrWhiteSpace(OutputDir))
+        {
+            try { Directory.CreateDirectory(OutputDir); dir = OutputDir; } catch { /* keep the default folder */ }
+        }
         var baseName = Path.GetFileNameWithoutExtension(sourceFile);
         try
         {
@@ -251,4 +258,6 @@ btn.addEventListener('click',async()=>{
     public static string Save(string sourceFile, string suffix, string html) => SaveContent(sourceFile, suffix, html, ".html");
 
     public static string SaveText(string sourceFile, string suffix, string text) => SaveContent(sourceFile, suffix, text, ".txt");
+
+    public static string SaveSrt(string sourceFile, string suffix, string srt) => SaveContent(sourceFile, suffix, srt, ".srt");
 }

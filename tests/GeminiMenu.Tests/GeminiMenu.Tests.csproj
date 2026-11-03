@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>GeminiMenu</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Logic files only (no windows/forms), compiled straight into the test assembly so internal members are reachable. -->
+    <Compile Include="..\..\src\App\Jobs.cs" />
+    <Compile Include="..\..\src\App\GeminiClient.cs" />
+    <Compile Include="..\..\src\App\AudioConvert.cs" />
+    <Compile Include="..\..\src\App\AppException.cs" />
+    <Compile Include="..\..\src\App\Config.cs" />
+    <Compile Include="..\..\src\App\Log.cs" />
+    <Compile Include="..\..\src\App\HtmlPages.cs" />
+    <Compile Include="..\..\src\App\Srt.cs" />
+    <Compile Include="..\..\src\App\UpdateCheck.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>

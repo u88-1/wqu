@@ -59,6 +59,13 @@ public class TranscriptTests
     }
 
     [Fact]
+    public void StripTimestamps_RemovesStampsAndKeepsText()
+    {
+        var r = Jobs.StripTimestamps("[00:00:05] דובר 1: שלום\n[00:00:09] דובר 2: היי\n[⚠ הקטע 00:12:00–00:15:00 לא תומלל במלואו]");
+        Assert.Equal("דובר 1: שלום\nדובר 2: היי\n[⚠ הקטע 00:12:00–00:15:00 לא תומלל במלואו]", r);
+    }
+
+    [Fact]
     public void ContextTail_StripsTimestamps()
     {
         var c = Jobs.ContextTail("[00:00:05] דובר 1: שלום\n[00:00:09] דובר 2: היי");

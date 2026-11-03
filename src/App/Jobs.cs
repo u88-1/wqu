@@ -93,6 +93,11 @@ public static class Jobs
             return $"[{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}]";
         });
 
+    /// <summary>Removes [HH:MM:SS] stamps (used when the user chooses to export without them).</summary>
+    internal static string StripTimestamps(string text) =>
+        Regex.Replace(TsRegex.Replace(text, ""), @"[ \t]{2,}", " ")
+             .Replace("\n ", "\n").Trim();
+
     /// <summary>Last few lines of the transcript without timestamps: given to the next chunk so speaker labels stay consistent.</summary>
     internal static string ContextTail(string transcript)
     {

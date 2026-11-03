@@ -50,12 +50,18 @@ public static class Worker
                 var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, status, cts.Token, options));
                 result = result with { ProcessingTime = stopwatch.Elapsed };
                 var suffix = kind == JobKind.Transcribe ? "תמלול" : "סיכום";
+                var srtSource = result; // SRT always needs the timestamps
+                if (kind == JobKind.Transcribe && form.SelectedFormat != ResultFormat.Srt && !form.IncludeTimestamps)
+                {
+                    var plain = Jobs.StripTimestamps(result.PlainText);
+                    result = result with { PlainText = plain, BodyHtml = HtmlPages.TranscriptBody(plain) };
+                }
                 var html = HtmlPages.ResultPage(result);
                 outPath = form.SelectedFormat switch
                 {
                     ResultFormat.Text => HtmlPages.SaveText(file, suffix, result.PlainText),
                     ResultFormat.Both => SaveBoth(file, suffix, html, result.PlainText),
-                    ResultFormat.Srt => SaveSrt(file, suffix, html, result),
+                    ResultFormat.Srt => SaveSrt(file, suffix, html, srtSource),
                     _ => HtmlPages.Save(file, suffix, html),
                 };
             }

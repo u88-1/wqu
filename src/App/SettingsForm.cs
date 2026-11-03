@@ -66,7 +66,7 @@ public sealed class SettingsForm : Form
         _model.RightToLeft = RightToLeft.No;
         Field(_model);
 
-        _timestamps.Text = "הוסף חותמות זמן [HH:MM:SS] לתמלול (נדרש גם לכתוביות SRT)";
+        _timestamps.Text = "בקש חותמות זמן [HH:MM:SS] בתמלול (בחלון התמלול בוחרים אם לכלול אותן בקובץ)";
         _timestamps.Checked = _cfg.Timestamps;
         _timestamps.Bounds = new Rectangle(20, y, 540, 26);
         Controls.Add(_timestamps);

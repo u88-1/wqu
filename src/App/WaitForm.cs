@@ -16,10 +16,14 @@ public sealed class WaitForm : Form
     readonly ProgressBar _bar = new();
     readonly Button _cancel = new();
     readonly LinkLabel _update = new();
+    readonly CheckBox _withTimestamps = new();
     readonly System.Windows.Forms.Timer _clock = new() { Interval = 1000 };
     readonly Stopwatch _elapsed = Stopwatch.StartNew();
     public event Action? CancelRequested;
     public bool Finished { get; set; }
+    /// <summary>Whether the saved file should keep the [HH:MM:SS] stamps (transcripts only).</summary>
+    public bool IncludeTimestamps => _withTimestamps.Checked;
+
     public ResultFormat SelectedFormat => _format.SelectedIndex switch
     {
         1 => ResultFormat.Text,
@@ -41,7 +45,7 @@ public sealed class WaitForm : Form
         MinimizeBox = true;
         TopMost = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(480, 300);
+        ClientSize = new Size(480, 312);
         Font = new Font("Segoe UI", 10f);
         BackColor = Color.White;
         ShowInTaskbar = true;
@@ -90,21 +94,33 @@ public sealed class WaitForm : Form
         _elapsedLabel.SetBounds(16, 150, 448, 22);
 
         var formatLabel = new Label { Text = "שמור כ:", ForeColor = Muted };
-        formatLabel.SetBounds(16, 186, 70, 26);
+        formatLabel.SetBounds(16, 182, 70, 26);
 
         _format.DropDownStyle = ComboBoxStyle.DropDownList;
         _format.FlatStyle = FlatStyle.Flat;
         _format.Items.AddRange(new object[] { "דף HTML (נפתח בדפדפן)", "קובץ טקסט (TXT)", "גם HTML וגם TXT" });
         if (allowSrt) _format.Items.Add("כתוביות (SRT)");
         _format.SelectedIndex = defaultFormat switch { "text" => 1, "both" => 2, "srt" when allowSrt => 3, _ => 0 };
-        _format.SetBounds(92, 183, 372, 28);
+        _format.SetBounds(92, 179, 372, 28);
+
+        _withTimestamps.Text = "כלול חותמות זמן בקובץ";
+        _withTimestamps.Checked = true;
+        _withTimestamps.Visible = allowSrt;
+        _withTimestamps.SetBounds(16, 212, 448, 26);
+        // Subtitles (SRT) cannot exist without timestamps.
+        _format.SelectedIndexChanged += (_, _) =>
+        {
+            bool srt = SelectedFormat == ResultFormat.Srt;
+            if (srt) _withTimestamps.Checked = true;
+            _withTimestamps.Enabled = !srt;
+        };
 
         _cancel.Text = "ביטול";
         _cancel.FlatStyle = FlatStyle.Flat;
         _cancel.FlatAppearance.BorderColor = Color.FromArgb(200, 205, 215);
         _cancel.BackColor = Color.White;
         _cancel.Cursor = Cursors.Hand;
-        _cancel.SetBounds(16, 226, 96, 30);
+        _cancel.SetBounds(16, 244, 96, 30);
         _cancel.Click += (_, _) => { CancelRequested?.Invoke(); Close(); };
 
         var minimizeHint = new Label
@@ -114,18 +130,18 @@ public sealed class WaitForm : Form
             Font = new Font("Segoe UI", 9f),
             TextAlign = ContentAlignment.MiddleRight,
         };
-        minimizeHint.SetBounds(124, 226, 340, 30);
+        minimizeHint.SetBounds(124, 244, 340, 30);
 
         _update.Visible = false;
         _update.LinkColor = Accent;
         _update.TextAlign = ContentAlignment.MiddleRight;
-        _update.SetBounds(16, 266, 448, 24);
+        _update.SetBounds(16, 280, 448, 24);
         _update.LinkClicked += (_, _) =>
         {
             try { if (_update.Tag is string url) Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
         };
 
-        Controls.AddRange(new Control[] { header, _status, _bar, _elapsedLabel, formatLabel, _format, _cancel, minimizeHint, _update });
+        Controls.AddRange(new Control[] { header, _status, _bar, _elapsedLabel, formatLabel, _format, _withTimestamps, _cancel, minimizeHint, _update });
         _clock.Tick += (_, _) => UpdateElapsed();
         _clock.Start();
         FormClosed += (_, _) => { _clock.Stop(); _clock.Dispose(); };

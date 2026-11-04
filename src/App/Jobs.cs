@@ -8,6 +8,23 @@ namespace GeminiMenu;
 
 public enum JobKind { Transcribe, Summarize }
 
+public enum OutputMode
+{
+    DocumentKeyPoints,
+    DocumentBrief,
+    DocumentConclusions,
+    DocumentTasksDatesAmounts,
+    DocumentCustomQuestion,
+    TranscriptExact,
+    TranscriptClean,
+    TranscriptAndSummary,
+    TranscriptSummaryOnly,
+    TranscriptMeetingMinutes,
+    TranscriptCustomInstruction,
+}
+
+public sealed record OutputSelection(OutputMode Mode, string CustomInstruction = "");
+
 /// <summary>Per-run options taken from the settings window.</summary>
 public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal")
 {
@@ -15,7 +32,7 @@ public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int Ch
         new(c.Timestamps, Math.Clamp(c.ParallelChunks, 1, 4), Math.Clamp(c.ChunkSeconds, 60, 300), c.SummaryDetail);
 }
 
-public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null);
+public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null, string? Title = null, bool IsSummary = false, string? SupplementaryText = null);
 
 public static class Jobs
 {
@@ -35,7 +52,7 @@ public static class Jobs
 
     static Jobs() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions? options = null)
+    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions? options = null, Func<OutputSelection>? getOutputSelection = null)
     {
         options ??= new JobOptions();
         if (!File.Exists(file)) throw new AppException(ErrKind.FileProblem, "הקובץ לא נמצא: " + file);
@@ -48,7 +65,8 @@ public static class Jobs
             return await TranscribeAsync(file, ext, name, client, status, ct, options).ConfigureAwait(false);
         }
         if (!DocExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו נתמך לסיכום: " + ext);
-        return await SummarizeAsync(file, ext, name, client, status, ct, options).ConfigureAwait(false);
+        return await SummarizeAsync(file, ext, name, client, status, ct, options,
+            getOutputSelection ?? (() => new OutputSelection(OutputMode.DocumentKeyPoints))).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ transcription
@@ -409,6 +427,44 @@ public static class Jobs
             "אל תמציא מידע שאינו מופיע במסמך.";
     }
 
+    internal static string SummaryPrompt(OutputSelection selection, string detail)
+    {
+        var transcriptMode = selection.Mode is OutputMode.TranscriptAndSummary or OutputMode.TranscriptSummaryOnly
+            or OutputMode.TranscriptMeetingMinutes or OutputMode.TranscriptCustomInstruction;
+        var standard = transcriptMode
+            ? "עבד בעברית את המקור המצורף והחזר את המידע במבנה המבוקש, ללא פרטים מומצאים."
+            : SummaryPrompt(detail);
+        if ((selection.Mode is OutputMode.DocumentCustomQuestion or OutputMode.TranscriptCustomInstruction)
+            && string.IsNullOrWhiteSpace(selection.CustomInstruction))
+            throw new AppException(ErrKind.FileProblem, "נא לכתוב שאלה או הוראה בשדה המתאים.");
+
+        var specific = selection.Mode switch
+        {
+            OutputMode.DocumentBrief =>
+                "סכם את המסמך בעברית בקיצור רב. כתוב משפט אחד קצר ב-oneLine ועד 5 נקודות קצרות ב-mainPoints. אל תוסיף פרטים שאינם נחוצים לסיכום. " +
+                "מלא actions, dates ו-amounts רק אם הם חיוניים להבנת הסיכום. אל תוסיף יותר מ-5 נקודות.",
+            OutputMode.DocumentConclusions =>
+                "נתח את המסמך בעברית והצג מסקנות העולות ממנו בלבד. מלא decisions בהחלטות או מסקנות, problems בבעיות, missing במידע חסר או שאלות פתוחות, ו-recommendations בהמלצות מעשיות. " +
+                "ציין במפורש כשאין מידע מתאים באמצעות מערך ריק; אל תציג השערות כעובדות ואל תמציא מידע.",
+            OutputMode.DocumentTasksDatesAmounts =>
+                "חלץ מהמסמך בעברית רק משימות או פעולות, תאריכים ומועדים, וסכומים או כמויות. מלא רק את actions, dates ו-amounts; השאר oneLine, mainPoints ושאר השדות ריקים. אל תוסיף פרשנות ואל תמציא מידע.",
+            OutputMode.DocumentCustomQuestion =>
+                "ענה בעברית על השאלה הבאה בהתבסס רק על המסמך. אם אין במסמך תשובה, אמור זאת במפורש. אל תמציא מידע. השב בתמצית ב-oneLine וב-mainPoints, והשתמש בשאר השדות רק כשהם נחוצים לתשובה.\n" +
+                "שאלת המשתמש:\n<<<\n" + selection.CustomInstruction.Trim() + "\n>>>",
+            OutputMode.TranscriptAndSummary =>
+                "סכם בעברית את התמלול שלהלן: משפט תמציתי ב-oneLine ונקודות עיקריות ב-mainPoints. הוסף פעולות, מועדים וסכומים רק אם נאמרו במפורש. אל תמציא מידע.",
+            OutputMode.TranscriptSummaryOnly =>
+                "כתוב בעברית סיכום תמציתי של התמלול: משפט קצר ב-oneLine ועד 5 נקודות עיקריות ב-mainPoints. ציין פעולות, מועדים וסכומים רק אם נאמרו במפורש. אל תוסיף יותר מ-5 נקודות.",
+            OutputMode.TranscriptMeetingMinutes =>
+                "הכן פרוטוקול פגישה בעברית על סמך התמלול בלבד: participants לשמות משתתפים שניתן לזהות, topics לנושאים, decisions להחלטות, actions למשימות ו-dates למועדים שנאמרו. אל תנחש שמות או פרטים חסרים; השאר מערכים ריקים כשאין מידע.",
+            OutputMode.TranscriptCustomInstruction =>
+                "בצע את ההוראה הבאה על סמך התמלול בלבד. התייחס רק למה שנאמר, ואל תמציא עובדות. כתוב תשובה תמציתית ב-oneLine וב-mainPoints והוסף פרטים בשדות המתאימים רק אם הם רלוונטיים.\n" +
+                "הוראת המשתמש:\n<<<\n" + selection.CustomInstruction.Trim() + "\n>>>",
+            _ => "",
+        };
+        return standard + (specific.Length == 0 ? "" : "\n" + specific);
+    }
+
     static JsonObject SummarySchema()
     {
         JsonObject Arr() => new() { ["type"] = "ARRAY", ["items"] = new JsonObject { ["type"] = "STRING" } };
@@ -419,6 +475,12 @@ public static class Jobs
             {
                 ["oneLine"] = new JsonObject { ["type"] = "STRING" },
                 ["mainPoints"] = Arr(),
+                ["topics"] = Arr(),
+                ["participants"] = Arr(),
+                ["decisions"] = Arr(),
+                ["problems"] = Arr(),
+                ["missing"] = Arr(),
+                ["recommendations"] = Arr(),
                 ["actions"] = Arr(),
                 ["dates"] = Arr(),
                 ["amounts"] = Arr(),
@@ -427,7 +489,7 @@ public static class Jobs
         };
     }
 
-    static async Task<SummaryData> RunSummaryAsync(JsonArray parts, GeminiClient client, CancellationToken ct)
+    static async Task<SummaryData> RunSummaryAsync(JsonArray parts, GeminiClient client, CancellationToken ct, bool disableThinkingWhenPossible = false)
     {
         var cfg = new JsonObject
         {
@@ -435,7 +497,7 @@ public static class Jobs
             ["responseMimeType"] = "application/json",
             ["responseSchema"] = SummarySchema(),
         };
-        var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: false, ct).ConfigureAwait(false);
+        var res = await client.GenerateAsync(parts, cfg, disableThinkingWhenPossible, ct).ConfigureAwait(false);
         try { return SummaryData.Parse(res.Text); }
         catch (Exception ex)
         {
@@ -462,7 +524,7 @@ public static class Jobs
         return pieces;
     }
 
-    static async Task<SummaryData> SummarizeStagedAsync(string text, JobOptions o, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<SummaryData> SummarizeStagedAsync(string text, string prompt, GeminiClient client, Action<string> status, CancellationToken ct, bool disableThinkingWhenPossible = false)
     {
         var pieces = SplitText(text, PieceChars);
         var partial = new List<SummaryData>();
@@ -472,10 +534,10 @@ public static class Jobs
             status($"מסכם חלק {i + 1} מתוך {pieces.Count}...");
             var parts = new JsonArray
             {
-                new JsonObject { ["text"] = SummaryPrompt(o.SummaryDetail) },
+                new JsonObject { ["text"] = prompt },
                 new JsonObject { ["text"] = $"חלק {i + 1} מתוך {pieces.Count} של מסמך ארוך:\n\n" + pieces[i] },
             };
-            partial.Add(await RunSummaryAsync(parts, client, ct).ConfigureAwait(false));
+            partial.Add(await RunSummaryAsync(parts, client, ct, disableThinkingWhenPossible).ConfigureAwait(false));
         }
 
         status("מאחד את הסיכומים לסיכום אחד...");
@@ -484,17 +546,18 @@ public static class Jobs
             sb.AppendLine($"--- סיכום חלק {i + 1} מתוך {partial.Count} ---").AppendLine(partial[i].ToPlainText($"חלק {i + 1}")).AppendLine();
         var mergeParts = new JsonArray
         {
-            new JsonObject { ["text"] = "להלן סיכומי ביניים של חלקים עוקבים של מסמך אחד גדול. אחד אותם לסיכום אחד של המסמך כולו, בלי כפילויות. " + SummaryPrompt(o.SummaryDetail) },
+            new JsonObject { ["text"] = "להלן סיכומי ביניים של חלקים עוקבים של מקור אחד גדול. אחד אותם לתוצאה אחת של המקור כולו, בלי כפילויות. " + prompt },
             new JsonObject { ["text"] = sb.ToString() },
         };
-        return await RunSummaryAsync(mergeParts, client, ct).ConfigureAwait(false);
+        return await RunSummaryAsync(mergeParts, client, ct, disableThinkingWhenPossible).ConfigureAwait(false);
     }
 
-    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
+    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o, Func<OutputSelection> getOutputSelection)
     {
-        var parts = new JsonArray { new JsonObject { ["text"] = SummaryPrompt(o.SummaryDetail) } };
+        var parts = new JsonArray();
         UploadedFile? up = null;
         string? note = null;
+        OutputSelection? selection = null;
         try
         {
             if (ext == ".pdf")
@@ -518,6 +581,8 @@ public static class Jobs
                 status("קורא את המסמך...");
                 var text = ext == ".docx" ? ReadDocx(file) : ReadText(file);
                 if (string.IsNullOrWhiteSpace(text)) throw new AppException(ErrKind.FileProblem, "לא נמצא טקסט במסמך");
+                selection = getOutputSelection();
+                var prompt = SummaryPrompt(selection, o.SummaryDetail);
                 if (text.Length > MaxChars)
                 {
                     text = text[..MaxChars];
@@ -525,21 +590,92 @@ public static class Jobs
                 }
                 if (text.Length > StageChars)
                 {
-                    var staged = await SummarizeStagedAsync(text, o, client, status, ct).ConfigureAwait(false);
+                    var staged = await SummarizeStagedAsync(text, prompt, client, status, ct).ConfigureAwait(false);
                     var stagedNote = "המסמך ארוך, ולכן סוכם בשלבים: כל חלק סוכם בנפרד ואז אוחדו הסיכומים." + (note == null ? "" : " " + note);
-                    return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(staged), staged.ToPlainText(name), stagedNote);
+                    return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(staged), staged.ToPlainText(name), stagedNote, IsSummary: true);
                 }
                 parts.Add(new JsonObject { ["text"] = "המסמך:\n\n" + text });
             }
 
+            selection ??= getOutputSelection();
+            parts.Insert(0, new JsonObject { ["text"] = SummaryPrompt(selection, o.SummaryDetail) });
             status("מסכם...");
             var data = await RunSummaryAsync(parts, client, ct).ConfigureAwait(false);
-            return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(data), data.ToPlainText(name), note);
+            return new JobResult(JobKind.Summarize, name, HtmlPages.SummaryBody(data), data.ToPlainText(name), note, IsSummary: true);
         }
         finally
         {
             if (up != null) await client.DeleteFileAsync(up).ConfigureAwait(false);
         }
+    }
+
+    public static async Task<JobResult> FormatTranscriptAsync(string fileName, string transcript, OutputSelection selection, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions options)
+    {
+        if (selection.Mode == OutputMode.TranscriptExact)
+            return new JobResult(JobKind.Transcribe, fileName, HtmlPages.TranscriptBody(transcript), transcript, null);
+
+        if (selection.Mode == OutputMode.TranscriptClean)
+        {
+            var clean = await CleanTranscriptAsync(transcript, client, status, ct).ConfigureAwait(false);
+            const string note = "התמלול עבר ניקוי של מילות מילוי וחזרות, ולכן אינו תמלול מילה במילה.";
+            return new JobResult(JobKind.Transcribe, fileName, HtmlPages.TranscriptBody(clean), clean, note, Title: "תמלול נקי", IsSummary: false);
+        }
+
+        var data = await SummarizeTranscriptAsync(transcript, selection, options, client, status, ct).ConfigureAwait(false);
+        var summaryText = data.ToPlainText(fileName);
+        if (selection.Mode == OutputMode.TranscriptAndSummary)
+        {
+            var combined = transcript + "\n\n" + summaryText;
+            return new JobResult(JobKind.Transcribe, fileName, HtmlPages.TranscriptSummaryBody(transcript, data), combined, null,
+                Title: "תמלול וסיכום הקלטה", IsSummary: true, SupplementaryText: summaryText);
+        }
+
+        return new JobResult(JobKind.Transcribe, fileName, HtmlPages.SummaryBody(data), summaryText, null,
+            Title: selection.Mode switch
+            {
+                OutputMode.TranscriptMeetingMinutes => "פרוטוקול פגישה",
+                OutputMode.TranscriptCustomInstruction => "תשובה על ההקלטה",
+                _ => "סיכום הקלטה",
+            },
+            IsSummary: true);
+    }
+
+    static async Task<SummaryData> SummarizeTranscriptAsync(string transcript, OutputSelection selection, JobOptions options, GeminiClient client, Action<string> status, CancellationToken ct)
+    {
+        var prompt = SummaryPrompt(selection, options.SummaryDetail);
+        if (transcript.Length > StageChars)
+            return await SummarizeStagedAsync(transcript, prompt, client, status, ct, disableThinkingWhenPossible: true).ConfigureAwait(false);
+
+        status("מפיק סיכום מהתמלול...");
+        var parts = new JsonArray
+        {
+            new JsonObject { ["text"] = prompt },
+            new JsonObject { ["text"] = "התמלול:\n\n" + transcript },
+        };
+        return await RunSummaryAsync(parts, client, ct, disableThinkingWhenPossible: true).ConfigureAwait(false);
+    }
+
+    static async Task<string> CleanTranscriptAsync(string transcript, GeminiClient client, Action<string> status, CancellationToken ct)
+    {
+        const int cleanPieceChars = 20_000;
+        var pieces = transcript.Length > cleanPieceChars ? SplitText(transcript, cleanPieceChars) : new List<string> { transcript };
+        var cleaned = new List<string>();
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            status(pieces.Count == 1 ? "מנקה את התמלול..." : $"מנקה חלק {i + 1} מתוך {pieces.Count}...");
+            var parts = new JsonArray
+            {
+                new JsonObject { ["text"] =
+                    "ערוך את התמלול המצורף לתמלול נקי: הסר מילות מילוי כגון אה ואממ, גמגומים וחזרות מקריות בלבד. " +
+                    "שמור על כל המידע, הניסוח, שפת הדיבור, סדר הדברים, תוויות הדוברים וחותמות הזמן. אל תסכם, אל תשכתב ואל תוסיף דבר. " +
+                    "החזר את התמלול בלבד, ללא הקדמה או עיצוב." },
+                new JsonObject { ["text"] = pieces[i] },
+            };
+            var result = await client.GenerateAsync(parts, new JsonObject { ["maxOutputTokens"] = MaxTranscriptTokens }, true, ct).ConfigureAwait(false);
+            cleaned.Add(result.Text.Trim());
+        }
+        return string.Join("\n", cleaned);
     }
 
     // ------------------------------------------------------------------ readers
@@ -593,6 +729,12 @@ public sealed class SummaryData
 {
     public string OneLine { get; init; } = "";
     public List<string> MainPoints { get; init; } = new();
+    public List<string> Topics { get; init; } = new();
+    public List<string> Participants { get; init; } = new();
+    public List<string> Decisions { get; init; } = new();
+    public List<string> Problems { get; init; } = new();
+    public List<string> Missing { get; init; } = new();
+    public List<string> Recommendations { get; init; } = new();
     public List<string> Actions { get; init; } = new();
     public List<string> Dates { get; init; } = new();
     public List<string> Amounts { get; init; } = new();
@@ -609,6 +751,12 @@ public sealed class SummaryData
         {
             OneLine = ((string?)n["oneLine"] ?? "").Trim(),
             MainPoints = Strs(n["mainPoints"]),
+            Topics = Strs(n["topics"]),
+            Participants = Strs(n["participants"]),
+            Decisions = Strs(n["decisions"]),
+            Problems = Strs(n["problems"]),
+            Missing = Strs(n["missing"]),
+            Recommendations = Strs(n["recommendations"]),
             Actions = Strs(n["actions"]),
             Dates = Strs(n["dates"]),
             Amounts = Strs(n["amounts"]),
@@ -619,7 +767,7 @@ public sealed class SummaryData
     {
         var sb = new StringBuilder();
         sb.AppendLine("סיכום: " + fileName).AppendLine();
-        sb.AppendLine("על מה המסמך:").AppendLine(OneLine).AppendLine();
+        if (OneLine.Length > 0) sb.AppendLine("על מה המקור:").AppendLine(OneLine).AppendLine();
         void Section(string title, List<string> items)
         {
             if (items.Count == 0) return;
@@ -628,6 +776,12 @@ public sealed class SummaryData
             sb.AppendLine();
         }
         Section("הנקודות העיקריות:", MainPoints);
+        Section("נושאים:", Topics);
+        Section("משתתפים:", Participants);
+        Section("החלטות:", Decisions);
+        Section("בעיות:", Problems);
+        Section("מידע חסר ושאלות פתוחות:", Missing);
+        Section("המלצות:", Recommendations);
         Section("פעולות שיש לבצע:", Actions);
         Section("תאריכים ומועדים:", Dates);
         Section("סכומים:", Amounts);

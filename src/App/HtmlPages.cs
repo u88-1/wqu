@@ -30,7 +30,8 @@ public static class HtmlPages
     public static string SummaryBody(SummaryData d)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("<section class=\"one\"><h2>על מה המסמך</h2><p dir=\"auto\">" + E(d.OneLine) + "</p></section>");
+        if (d.OneLine.Length > 0)
+            sb.AppendLine("<section class=\"one\"><h2>על מה המקור</h2><p dir=\"auto\">" + E(d.OneLine) + "</p></section>");
         void List(string title, List<string> items)
         {
             if (items.Count == 0) return;
@@ -39,11 +40,21 @@ public static class HtmlPages
             sb.AppendLine("</ul></section>");
         }
         List("הנקודות העיקריות", d.MainPoints);
+        List("נושאים", d.Topics);
+        List("משתתפים", d.Participants);
+        List("החלטות", d.Decisions);
+        List("בעיות", d.Problems);
+        List("מידע חסר ושאלות פתוחות", d.Missing);
+        List("המלצות", d.Recommendations);
         List("פעולות שיש לבצע", d.Actions);
         List("תאריכים ומועדים", d.Dates);
         List("סכומים", d.Amounts);
         return sb.ToString();
     }
+
+    public static string TranscriptSummaryBody(string transcript, SummaryData summary) =>
+        "<section><h2>תמלול</h2>" + TranscriptBody(transcript) + "</section>" +
+        "<section><h2>סיכום</h2>" + SummaryBody(summary) + "</section>";
 
     // ------------------------------------------------------------------ page shell
 
@@ -87,7 +98,7 @@ btn.addEventListener('click',async()=>{
   setTimeout(()=>{btn.textContent=old;btn.classList.remove('done')},2000);
 });";
 
-    static string Shell(string title, string meta, string bodyHtml, string? plain, string? noteHtml, string cardClass = "")
+    static string Shell(string title, string meta, string bodyHtml, string? plain, string? noteHtml, string cardClass = "", bool isSummary = false)
     {
         var sb = new StringBuilder();
         sb.AppendLine("<!DOCTYPE html>");
@@ -98,7 +109,8 @@ btn.addEventListener('click',async()=>{
         sb.AppendLine("</header>");
         if (noteHtml != null) sb.AppendLine("<div class=\"note\">" + noteHtml + "</div>");
         sb.AppendLine("<div class=\"card " + cardClass + "\" id=\"content\">" + bodyHtml + "</div>");
-        sb.AppendLine("<footer>הופק באמצעות Gemini. ייתכנו אי-דיוקים, ולכן כדאי לבדוק פרטים חשובים מול המקור.</footer></div>");
+        sb.AppendLine("<footer>הופק באמצעות Gemini. ייתכנו אי-דיוקים, ולכן כדאי לבדוק פרטים חשובים מול המקור." +
+            (isSummary ? " זה סיכום של Gemini, לא ציטוט." : "") + "</footer></div>");
         if (plain != null)
         {
             // JsonSerializer escapes < > & so the text cannot break out of the script tag.
@@ -110,11 +122,11 @@ btn.addEventListener('click',async()=>{
 
     public static string ResultPage(JobResult r)
     {
-        var title = r.Kind == JobKind.Transcribe ? "תמלול הקלטה" : "סיכום מסמך";
+        var title = r.Title ?? (r.Kind == JobKind.Transcribe ? "תמלול הקלטה" : "סיכום מסמך");
         var meta = r.FileName + "  ·  " + DateTime.Now.ToString("dd/MM/yyyy HH:mm");
         if (r.ProcessingTime is { } elapsed)
             meta += "  ·  זמן עיבוד: " + $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
-        return Shell(title, meta, r.BodyHtml, r.PlainText, r.Note == null ? null : E(r.Note));
+        return Shell(title, meta, r.BodyHtml, r.PlainText, r.Note == null ? null : E(r.Note), isSummary: r.IsSummary);
     }
 
     // ------------------------------------------------------------------ errors

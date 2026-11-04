@@ -102,6 +102,59 @@ public class SrtTests
     }
 }
 
+public class OutputSelectionTests
+{
+    [Fact]
+    public void DocumentCustomQuestion_IsIncludedInSummaryPrompt()
+    {
+        var prompt = Jobs.SummaryPrompt(new OutputSelection(OutputMode.DocumentCustomQuestion, "מה המסמך אומר על תנאי התשלום?"), "normal");
+        Assert.Contains("מה המסמך אומר על תנאי התשלום?", prompt);
+        Assert.Contains("רק על המסמך", prompt);
+    }
+
+    [Fact]
+    public void TranscriptCustomInstruction_IsIncludedInSummaryPrompt()
+    {
+        var prompt = Jobs.SummaryPrompt(new OutputSelection(OutputMode.TranscriptCustomInstruction, "הוצא רק מה שנאמר על התקציב"), "normal");
+        Assert.Contains("הוצא רק מה שנאמר על התקציב", prompt);
+        Assert.Contains("התמלול בלבד", prompt);
+    }
+
+    [Fact]
+    public void SummaryData_RendersConclusionsAndMeetingMinutesSections()
+    {
+        var data = SummaryData.Parse("""
+            {
+              "oneLine": "נדונה תוכנית העבודה",
+              "mainPoints": [],
+              "topics": ["תוכנית עבודה"],
+              "participants": ["דוברת 1"],
+              "decisions": ["להתחיל בחודש הבא"],
+              "problems": ["חסר תקציב"],
+              "missing": ["לא נקבע אחראי"],
+              "recommendations": ["לקבוע אחראי"],
+              "actions": ["לשלוח מסמך"],
+              "dates": [],
+              "amounts": []
+            }
+            """);
+
+        var html = HtmlPages.SummaryBody(data);
+        Assert.Contains("משתתפים", html);
+        Assert.Contains("החלטות", html);
+        Assert.Contains("בעיות", html);
+        Assert.Contains("המלצות", html);
+        Assert.Contains("לשלוח מסמך", data.ToPlainText("meeting.txt"));
+    }
+
+    [Fact]
+    public void ResultPage_IdentifiesSummaryAsGeminiSummaryNotQuotation()
+    {
+        var result = new JobResult(JobKind.Summarize, "doc.pdf", "", "סיכום", null, IsSummary: true);
+        Assert.Contains("זה סיכום של Gemini, לא ציטוט.", HtmlPages.ResultPage(result));
+    }
+}
+
 public class ConfigAndUpdateTests
 {
     [Fact]

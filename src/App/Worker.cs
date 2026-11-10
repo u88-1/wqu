@@ -69,6 +69,10 @@ public static class Worker
                     {
                         suffix = "תמלול נקי";
                     }
+                    else if (transcriptSelection.Mode == OutputMode.TranscriptBookStyle)
+                    {
+                        suffix = "בסגנון ספר";
+                    }
                     else if (transcriptSelection.Mode == OutputMode.TranscriptAndSummary)
                     {
                         suffix = "תמלול וסיכום";
@@ -78,6 +82,10 @@ public static class Worker
                         suffix = "סיכום";
                     }
                     result = await Jobs.FormatTranscriptAsync(Path.GetFileName(file), transcript, transcriptSelection, client, status, cts.Token, options);
+                }
+                else if (ReadOutputSelection().Mode == OutputMode.DocumentBookStyle)
+                {
+                    suffix = "בסגנון ספר";
                 }
                 result = result with { ProcessingTime = stopwatch.Elapsed };
                 var html = HtmlPages.ResultPage(result);

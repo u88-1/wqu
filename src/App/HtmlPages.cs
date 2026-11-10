@@ -27,6 +27,38 @@ public static class HtmlPages
         return sb.ToString();
     }
 
+    /// <summary>Book-style text: headings ("# ", "## ") become headings, [?] / [לא ברור] markers are highlighted, and the review list follows.</summary>
+    public static string BookBody(string text, List<string>? flags = null)
+    {
+        var sb = new StringBuilder();
+        foreach (var raw in (text ?? "").Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (BookStyle.IsHeading(line, out var level, out var title))
+            {
+                var tag = level == 1 ? "h2" : "h3";
+                sb.Append('<').Append(tag).Append(" dir=\"auto\">").Append(E(title)).Append("</").Append(tag).AppendLine(">");
+                continue;
+            }
+            sb.Append("<p dir=\"auto\">");
+            int pos = 0;
+            foreach (System.Text.RegularExpressions.Match m in BookStyle.FlagRegex.Matches(line))
+            {
+                sb.Append(E(line[pos..m.Index])).Append("<mark>").Append(E(m.Value)).Append("</mark>");
+                pos = m.Index + m.Length;
+            }
+            sb.Append(E(line[pos..])).AppendLine("</p>");
+        }
+        if (flags is { Count: > 0 })
+        {
+            sb.AppendLine("<section class=\"review\"><h2>מקומות לבירור</h2><ul>");
+            foreach (var f in flags) sb.AppendLine("<li dir=\"auto\">" + E(f) + "</li>");
+            sb.AppendLine("</ul></section>");
+        }
+        return sb.ToString();
+    }
+
     public static string SummaryBody(SummaryData d)
     {
         var sb = new StringBuilder();
@@ -75,6 +107,10 @@ button#copy.done{background:#16a34a}
 section{margin-bottom:1.4rem}
 section:last-child{margin-bottom:0}
 h2{font-size:1.1rem;color:var(--accent);margin:0 0 .35rem}
+.card>h2{margin-top:1.2rem}
+.card>h3{font-size:1rem;margin:1rem 0 .3rem}
+mark{background:#fff3b0;color:#1d2433;padding:0 3px;border-radius:4px}
+.review{border-top:1px solid var(--line);padding-top:1rem;margin-top:1.4rem}
 .one p{font-size:1.15rem;font-weight:600}
 ul{margin:.2rem 0;padding-inline-start:1.4rem}
 li{margin-bottom:.4rem}

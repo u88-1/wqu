@@ -15,8 +15,10 @@ public enum OutputMode
     DocumentConclusions,
     DocumentTasksDatesAmounts,
     DocumentCustomQuestion,
+    DocumentBookStyle,
     TranscriptExact,
     TranscriptClean,
+    TranscriptBookStyle,
     TranscriptAndSummary,
     TranscriptSummaryOnly,
     TranscriptMeetingMinutes,
@@ -588,6 +590,12 @@ public static class Jobs
                     text = text[..MaxChars];
                     note = "המסמך ארוך מאוד, ולכן הסיכום מבוסס על החלק הראשון שלו בלבד (כ-3 מיליון תווים).";
                 }
+                if (selection.Mode == OutputMode.DocumentBookStyle)
+                {
+                    var (bookText, bookWarnings) = await BookStyleTextAsync(text, GenerateForBook(client), status, ct).ConfigureAwait(false);
+                    if (note != null) bookWarnings.Insert(0, note);
+                    return BookResult(JobKind.Summarize, name, bookText, bookWarnings);
+                }
                 if (text.Length > StageChars)
                 {
                     var staged = await SummarizeStagedAsync(text, prompt, client, status, ct).ConfigureAwait(false);
@@ -598,6 +606,8 @@ public static class Jobs
             }
 
             selection ??= getOutputSelection();
+            if (selection.Mode == OutputMode.DocumentBookStyle)
+                return await BookStyleFromPdfAsync(name, parts, client, status, ct).ConfigureAwait(false);
             parts.Insert(0, new JsonObject { ["text"] = SummaryPrompt(selection, o.SummaryDetail) });
             status("מסכם...");
             var data = await RunSummaryAsync(parts, client, ct).ConfigureAwait(false);
@@ -619,6 +629,12 @@ public static class Jobs
             var clean = await CleanTranscriptAsync(transcript, client, status, ct).ConfigureAwait(false);
             const string note = "התמלול עבר ניקוי של מילות מילוי וחזרות, ולכן אינו תמלול מילה במילה.";
             return new JobResult(JobKind.Transcribe, fileName, HtmlPages.TranscriptBody(clean), clean, note, Title: "תמלול נקי", IsSummary: false);
+        }
+
+        if (selection.Mode == OutputMode.TranscriptBookStyle)
+        {
+            var (bookText, warnings) = await BookStyleTextAsync(transcript, GenerateForBook(client), status, ct).ConfigureAwait(false);
+            return BookResult(JobKind.Transcribe, fileName, bookText, warnings);
         }
 
         var data = await SummarizeTranscriptAsync(transcript, selection, options, client, status, ct).ConfigureAwait(false);
@@ -676,6 +692,109 @@ public static class Jobs
             cleaned.Add(result.Text.Trim());
         }
         return string.Join("\n", cleaned);
+    }
+
+    // ------------------------------------------------------------------ book style
+
+    /// <summary>One model call: (parts, generation config) -> result. Injected so the book-style flow can be tested without the network.</summary>
+    internal delegate Task<GenResult> Generate(JsonArray parts, JsonObject config, CancellationToken ct);
+
+    static Generate GenerateForBook(GeminiClient client) =>
+        (parts, cfg, ct) => client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct);
+
+    static JsonObject BookConfig() => new() { ["maxOutputTokens"] = MaxTranscriptTokens };
+
+    /// <summary>Edits spoken-style text into book style, piece by piece. Returns the text and warnings for the result note.</summary>
+    internal static async Task<(string Text, List<string> Warnings)> BookStyleTextAsync(string source, Generate generate, Action<string> status, CancellationToken ct)
+    {
+        var prepared = BookStyle.Prepare(source);
+        if (string.IsNullOrWhiteSpace(prepared)) throw new AppException(ErrKind.FileProblem, "לא נמצא טקסט לעריכה");
+        var pieces = SplitText(prepared, BookStyle.PieceChars);
+        var warnings = new List<string>();
+        var outputs = new List<string>();
+        var tail = "";
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            status(pieces.Count == 1 ? "מסגנן את הטקסט לספר..." : $"מסגנן חלק {i + 1} מתוך {pieces.Count} לספר...");
+            var edited = await BookPieceAsync(pieces[i], i + 1, pieces.Count, tail, generate, warnings, ct, depth: 0).ConfigureAwait(false);
+            outputs.Add(edited);
+            tail = BookStyle.Tail(edited);
+        }
+        return (string.Join("\n\n", outputs.Where(x => x.Length > 0)), warnings);
+    }
+
+    static async Task<string> BookPieceAsync(string piece, int part, int totalParts, string tail, Generate generate, List<string> warnings, CancellationToken ct, int depth)
+    {
+        string last = "";
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var parts = new JsonArray
+            {
+                new JsonObject { ["text"] = BookStyle.BuildPrompt(part, totalParts, tail) },
+                new JsonObject { ["text"] = "הטקסט לעריכה:\n\n" + piece },
+            };
+            var res = await generate(parts, BookConfig(), ct).ConfigureAwait(false);
+
+            if (res.FinishReason == "MAX_TOKENS")
+            {
+                // The edited piece does not fit in one answer: edit it in two halves instead of losing the end.
+                if (depth < 2 && piece.Length > 2000)
+                {
+                    var halves = SplitText(piece, piece.Length / 2 + 1);
+                    var results = new List<string>();
+                    var ctx = tail;
+                    foreach (var h in halves)
+                    {
+                        var r = await BookPieceAsync(h, part, totalParts, ctx, generate, warnings, ct, depth + 1).ConfigureAwait(false);
+                        results.Add(r);
+                        ctx = BookStyle.Tail(r);
+                    }
+                    return string.Join("\n\n", results.Where(x => x.Length > 0));
+                }
+                warnings.Add($"חלק {part} נקטע באמצע בגלל מגבלת אורך. כדאי לבדוק את סופו מול המקור.");
+                return BookStyle.NormalizeOutput(res.Text);
+            }
+
+            last = BookStyle.NormalizeOutput(res.Text);
+            if (!BookStyle.LooksTruncated(piece, last)) return last;
+            Log.Write($"book-style part {part}/{totalParts} looks truncated: {last.Length} chars from {piece.Length}");
+        }
+
+        warnings.Add($"חלק {part} קצר בהרבה מהמקור, וייתכן שחלקים ממנו הושמטו. כדאי להשוות מול המקור.");
+        return last;
+    }
+
+    static async Task<JobResult> BookStyleFromPdfAsync(string name, JsonArray pdfParts, GeminiClient client, Action<string> status, CancellationToken ct)
+    {
+        status("מסגנן את המסמך לספר...");
+        var parts = new JsonArray(pdfParts.Select(x => x?.DeepClone()).ToArray());
+        parts.Insert(0, new JsonObject
+        {
+            ["text"] = BookStyle.BuildPrompt(1, 1, "") +
+                "\nהמקור הוא המסמך המצורף (PDF). התעלם מכותרות עליונות ותחתונות ומספרי עמודים החוזרים בכל עמוד."
+        });
+        var res = await client.GenerateAsync(parts, BookConfig(), disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
+        var text = BookStyle.NormalizeOutput(res.Text);
+        if (text.Length == 0) throw new AppException(ErrKind.Blocked, "Gemini לא החזיר טקסט מהמסמך. נסה שוב.");
+        var warnings = new List<string>();
+        if (res.FinishReason == "MAX_TOKENS")
+            warnings.Add("המסמך ארוך מכדי לעבד אותו כקובץ PDF בבת אחת, והטקסט נקטע. להמרה מלאה העתק את הטקסט לקובץ TXT או DOCX והפעל שוב.");
+        return BookResult(JobKind.Summarize, name, text, warnings);
+    }
+
+    internal static JobResult BookResult(JobKind kind, string fileName, string text, List<string> warnings)
+    {
+        var flags = BookStyle.ExtractFlags(text);
+        var plain = BookStyle.ToPlain(text);
+        var review = BookStyle.FlagsSection(flags);
+        if (review.Length > 0) plain += "\n\n" + review;
+
+        var notes = new List<string> { "הטקסט נערך לסגנון ספר ואינו תמלול מילה במילה." };
+        if (flags.Count > 0) notes.Add($"סומנו {flags.Count} מקומות לבירור, והם מופיעים גם ברשימה בסוף.");
+        notes.AddRange(warnings);
+        return new JobResult(kind, fileName, HtmlPages.BookBody(text, flags), plain, string.Join(" ", notes), Title: "טקסט בסגנון ספר");
     }
 
     // ------------------------------------------------------------------ readers

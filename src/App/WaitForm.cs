@@ -32,10 +32,11 @@ public sealed class WaitForm : Form
         ? _output.SelectedIndex switch
         {
             1 => new OutputSelection(OutputMode.TranscriptClean),
-            2 => new OutputSelection(OutputMode.TranscriptAndSummary),
-            3 => new OutputSelection(OutputMode.TranscriptSummaryOnly),
-            4 => new OutputSelection(OutputMode.TranscriptMeetingMinutes),
-            5 => new OutputSelection(OutputMode.TranscriptCustomInstruction, _customInstruction.Text),
+            2 => new OutputSelection(OutputMode.TranscriptBookStyle),
+            3 => new OutputSelection(OutputMode.TranscriptAndSummary),
+            4 => new OutputSelection(OutputMode.TranscriptSummaryOnly),
+            5 => new OutputSelection(OutputMode.TranscriptMeetingMinutes),
+            6 => new OutputSelection(OutputMode.TranscriptCustomInstruction, _customInstruction.Text),
             _ => new OutputSelection(OutputMode.TranscriptExact),
         }
         : _output.SelectedIndex switch
@@ -43,7 +44,8 @@ public sealed class WaitForm : Form
             1 => new OutputSelection(OutputMode.DocumentBrief),
             2 => new OutputSelection(OutputMode.DocumentConclusions),
             3 => new OutputSelection(OutputMode.DocumentTasksDatesAmounts),
-            4 => new OutputSelection(OutputMode.DocumentCustomQuestion, _customInstruction.Text),
+            4 => new OutputSelection(OutputMode.DocumentBookStyle),
+            5 => new OutputSelection(OutputMode.DocumentCustomQuestion, _customInstruction.Text),
             _ => new OutputSelection(OutputMode.DocumentKeyPoints),
         };
 
@@ -125,8 +127,8 @@ public sealed class WaitForm : Form
         _output.DropDownStyle = ComboBoxStyle.DropDownList;
         _output.FlatStyle = FlatStyle.Flat;
         _output.Items.AddRange(isTranscription
-            ? new object[] { "תמלול מדויק", "תמלול נקי", "תמלול ואחריו סיכום נקודות", "סיכום בלבד (בלי התמלול)", "פרוטוקול פגישה", "הוראה חופשית..." }
-            : new object[] { "נקודות עיקריות (המבנה הנוכחי)", "סיכום מקוצר", "מסקנות: החלטות, בעיות, חסרים והמלצות", "משימות, תאריכים וסכומים בלבד", "שאלה חופשית..." });
+            ? new object[] { "תמלול מדויק", "תמלול נקי", "תמלול בסגנון ספר", "תמלול ואחריו סיכום נקודות", "סיכום בלבד (בלי התמלול)", "פרוטוקול פגישה", "הוראה חופשית..." }
+            : new object[] { "נקודות עיקריות (המבנה הנוכחי)", "סיכום מקוצר", "מסקנות: החלטות, בעיות, חסרים והמלצות", "משימות, תאריכים וסכומים בלבד", "עריכה בסגנון ספר", "שאלה חופשית..." });
         _output.SelectedIndex = 0;
         _output.SetBounds(92, 174, 372, 28);
         _output.SelectedIndexChanged += (_, _) =>
@@ -157,13 +159,8 @@ public sealed class WaitForm : Form
             _ => 0,
         };
         if (SelectedFormat == ResultFormat.Srt) _withTimestamps.Checked = true;
-        _withTimestamps.Enabled = SelectedFormat != ResultFormat.Srt;
-        _format.SelectedIndexChanged += (_, _) =>
-        {
-            bool srt = SelectedFormat == ResultFormat.Srt;
-            if (srt) _withTimestamps.Checked = true;
-            _withTimestamps.Enabled = !srt;
-        };
+        RefreshTimestampBox();
+        _format.SelectedIndexChanged += (_, _) => RefreshTimestampBox();
 
         _withTimestamps.Text = "כלול חותמות זמן בקובץ";
         _withTimestamps.Checked = true;
@@ -220,9 +217,15 @@ public sealed class WaitForm : Form
             _ => 0,
         };
         _format.EndUpdate();
+        RefreshTimestampBox();
+    }
+
+    /// <summary>Subtitles (SRT) always have timestamps; book style never keeps them. Otherwise the user decides.</summary>
+    void RefreshTimestampBox()
+    {
         bool srt = SelectedFormat == ResultFormat.Srt;
         if (srt) _withTimestamps.Checked = true;
-        _withTimestamps.Enabled = !srt;
+        _withTimestamps.Enabled = !srt && SelectedOutput.Mode != OutputMode.TranscriptBookStyle;
     }
 
     static readonly System.Text.RegularExpressions.Regex ChunkProgress =

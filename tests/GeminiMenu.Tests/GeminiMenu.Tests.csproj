@@ -9,6 +9,7 @@
   <ItemGroup>
     <!-- Logic files only (no windows/forms), compiled straight into the test assembly so internal members are reachable. -->
     <Compile Include="..\..\src\App\Jobs.cs" />
+    <Compile Include="..\..\src\App\BookStyle.cs" />
     <Compile Include="..\..\src\App\GeminiClient.cs" />
     <Compile Include="..\..\src\App\AudioConvert.cs" />
     <Compile Include="..\..\src\App\AppException.cs" />

@@ -47,6 +47,8 @@ public sealed class AppConfig
     /// <summary>How many files may be processed at the same time across all open windows.</summary>
     public int MaxConcurrentJobs { get; set; } = 2;
     public bool CheckUpdates { get; set; } = true;
+    /// <summary>Show the Hebrew date (לוח עברי) beside the regular date in result pages.</summary>
+    public bool HebrewDates { get; set; } = true;
 
     public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GeminiMenu");
     public static string FilePath => Path.Combine(Dir, "config.json");

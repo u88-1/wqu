@@ -15,6 +15,7 @@ public static class Worker
         AppConfig early;
         try { early = AppConfig.Load(); } catch { early = new AppConfig(); }
         HtmlPages.OutputDir = early.OutputDir;
+        HtmlPages.ShowHebrewDate = early.HebrewDates;
         var form = new WaitForm(kind == JobKind.Transcribe ? "מתמלל" : "מסכם", Path.GetFileName(file),
             allowSrt: kind == JobKind.Transcribe && early.Timestamps, defaultFormat: early.DefaultFormat, isTranscription: kind == JobKind.Transcribe);
         using var cts = new CancellationTokenSource();
@@ -33,6 +34,7 @@ public static class Worker
             {
                 var cfg = AppConfig.Load();
                 HtmlPages.OutputDir = cfg.OutputDir;
+                HtmlPages.ShowHebrewDate = cfg.HebrewDates;
                 BookStyle.CustomPrompt = cfg.BookPrompt;
 
                 // Which engine does what. Audio: Gemini or OpenAI. Editing and summaries: Gemini, Claude or OpenAI.

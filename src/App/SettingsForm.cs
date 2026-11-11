@@ -19,9 +19,10 @@ public sealed class SettingsForm : Form
     readonly ComboBox _detail = new();
     readonly NumericUpDown _jobs = new();
     readonly CheckBox _updates = new();
+    readonly CheckBox _hebrew = new();
 
     static readonly string[] FormatKeys = { "html", "text", "both", "docx", "srt" };
-    const int FormHeight = 700;
+    const int FormHeight = 710;
     static readonly string[] DetailKeys = { "short", "normal", "detailed" };
 
     public SettingsForm()
@@ -57,7 +58,7 @@ public sealed class SettingsForm : Form
         {
             c.Bounds = new Rectangle(300, y, width, height);
             Controls.Add(c);
-            y += height + 12;
+            y += height + 8;
         }
 
         Label("דגם Gemini (auto = הדגם החדש ביותר שזמין)");
@@ -117,7 +118,13 @@ public sealed class SettingsForm : Form
         _updates.Checked = _cfg.CheckUpdates;
         _updates.Bounds = new Rectangle(20, y, 540, 26);
         Controls.Add(_updates);
-        y += 36;
+        y += 30;
+
+        _hebrew.Text = "הצג גם את התאריך העברי בכותרת דפי התוצאה";
+        _hebrew.Checked = _cfg.HebrewDates;
+        _hebrew.Bounds = new Rectangle(20, y, 540, 26);
+        Controls.Add(_hebrew);
+        y += 34;
 
         var privacy = new Label
         {
@@ -163,6 +170,7 @@ public sealed class SettingsForm : Form
             _cfg.OutputDir = _outDir.Text.Trim();
             _cfg.MaxConcurrentJobs = (int)_jobs.Value;
             _cfg.CheckUpdates = _updates.Checked;
+            _cfg.HebrewDates = _hebrew.Checked;
             _cfg.Save();
             DialogResult = DialogResult.OK;
             Close();

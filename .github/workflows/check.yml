@@ -1,0 +1,30 @@
+name: check
+
+# Compile and test on every branch and pull request. Unlike "build", this never creates a release.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          dotnet test tests\GeminiMenu.Tests\GeminiMenu.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "unit tests failed" }
+
+      - name: Compile the app (no release)
+        shell: pwsh
+        run: |
+          # The real payload is built by the "build" workflow; a placeholder is enough to compile.
+          New-Item -ItemType Directory -Force out | Out-Null
+          Set-Content out\placeholder.txt "placeholder"
+          Compress-Archive -Path out\placeholder.txt -DestinationPath src\App\payload.zip -Force
+          dotnet build src\App\GeminiMenu.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }

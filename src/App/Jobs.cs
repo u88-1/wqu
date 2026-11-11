@@ -485,7 +485,7 @@ public static class Jobs
                 "הוראת המשתמש:\n<<<\n" + selection.CustomInstruction.Trim() + "\n>>>",
             _ => "",
         };
-        return standard + (specific.Length == 0 ? "" : "\n" + specific);
+        return standard + (specific.Length == 0 ? "" : "\n" + specific) + "\n" + HebrewDate.PromptNote(DateTime.Now);
     }
 
     static JsonObject SummarySchema()

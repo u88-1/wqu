@@ -159,7 +159,7 @@ btn.addEventListener('click',async()=>{
     public static string ResultPage(JobResult r)
     {
         var title = r.Title ?? (r.Kind == JobKind.Transcribe ? "תמלול הקלטה" : "סיכום מסמך");
-        var meta = r.FileName + "  ·  " + DateTime.Now.ToString("dd/MM/yyyy HH:mm");
+        var meta = r.FileName + "  ·  " + HebrewDate.Stamp(DateTime.Now, ShowHebrewDate);
         if (r.ProcessingTime is { } elapsed)
             meta += "  ·  זמן עיבוד: " + $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
         return Shell(title, meta, r.BodyHtml, r.PlainText, r.Note == null ? null : E(r.Note), isSummary: r.IsSummary);
@@ -270,7 +270,7 @@ btn.addEventListener('click',async()=>{
             body.AppendLine("<details><summary>פרטים טכניים</summary><pre>" + E(tech!) + "</pre></details>");
 
         var title = kind == JobKind.Transcribe ? "התמלול לא הושלם" : "הסיכום לא הושלם";
-        return Shell(title, fileName + "  ·  " + DateTime.Now.ToString("dd/MM/yyyy HH:mm"), body.ToString(), null, null, "err");
+        return Shell(title, fileName + "  ·  " + HebrewDate.Stamp(DateTime.Now, ShowHebrewDate), body.ToString(), null, null, "err");
     }
 
     // ------------------------------------------------------------------ saving
@@ -285,6 +285,9 @@ btn.addEventListener('click',async()=>{
     /// <summary>Saves next to the source file; falls back to the temp folder if that folder is not writable.</summary>
     /// <summary>Optional folder from the settings; empty = next to the source file.</summary>
     public static string? OutputDir { get; set; }
+
+    /// <summary>Show the Hebrew date beside the regular date in the header of the result pages (setting "HebrewDates").</summary>
+    public static bool ShowHebrewDate { get; set; } = true;
 
     /// <summary>Picks a free file name next to the source (or in the output folder, or the temp folder) and lets <paramref name="write"/> create the file.</summary>
     static string SaveWith(string sourceFile, string suffix, string extension, Action<string> write)

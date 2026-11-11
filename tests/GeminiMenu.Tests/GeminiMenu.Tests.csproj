@@ -18,6 +18,7 @@
     <Compile Include="..\..\src\App\Config.cs" />
     <Compile Include="..\..\src\App\Log.cs" />
     <Compile Include="..\..\src\App\HtmlPages.cs" />
+    <Compile Include="..\..\src\App\HebrewDate.cs" />
     <Compile Include="..\..\src\App\Srt.cs" />
     <Compile Include="..\..\src\App\UpdateCheck.cs" />
   </ItemGroup>

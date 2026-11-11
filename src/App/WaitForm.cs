@@ -4,7 +4,7 @@ using System.Windows.Forms;
 
 namespace GeminiMenu;
 
-public enum ResultFormat { Html, Text, Both, Srt }
+public enum ResultFormat { Html, Text, Both, Srt, Docx }
 
 /// <summary>Small always-on-top progress window shown while Gemini works.</summary>
 public sealed class WaitForm : Form
@@ -53,7 +53,8 @@ public sealed class WaitForm : Form
     {
         1 => ResultFormat.Text,
         2 => ResultFormat.Both,
-        3 => ResultFormat.Srt,
+        3 => ResultFormat.Docx,
+        4 => ResultFormat.Srt,
         _ => ResultFormat.Html,
     };
 
@@ -155,7 +156,8 @@ public sealed class WaitForm : Form
         {
             "text" => 1,
             "both" => 2,
-            "srt" when _format.Items.Count > 3 => 3,
+            "docx" => 3,
+            "srt" when _format.Items.Count > 4 => 4,
             _ => 0,
         };
         if (SelectedFormat == ResultFormat.Srt) _withTimestamps.Checked = true;
@@ -207,13 +209,14 @@ public sealed class WaitForm : Form
             OutputMode.TranscriptExact or OutputMode.TranscriptClean or OutputMode.TranscriptAndSummary;
         _format.BeginUpdate();
         _format.Items.Clear();
-        _format.Items.AddRange(new object[] { "דף HTML (נפתח בדפדפן)", "קובץ טקסט (TXT)", "גם HTML וגם TXT" });
+        _format.Items.AddRange(new object[] { "דף HTML (נפתח בדפדפן)", "קובץ טקסט (TXT)", "גם HTML וגם TXT", "קובץ Word (DOCX)" });
         if (supportsSrt) _format.Items.Add("כתוביות (SRT)");
         _format.SelectedIndex = selected switch
         {
             ResultFormat.Text => 1,
             ResultFormat.Both => 2,
-            ResultFormat.Srt when supportsSrt => 3,
+            ResultFormat.Docx => 3,
+            ResultFormat.Srt when supportsSrt => 4,
             _ => 0,
         };
         _format.EndUpdate();

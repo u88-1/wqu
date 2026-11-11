@@ -7,7 +7,7 @@ namespace GeminiMenu;
 public sealed record GenResult(string Text, string? FinishReason);
 public sealed record UploadedFile(string Name, string Uri, string MimeType);
 
-public sealed class GeminiClient : IDisposable
+public sealed class GeminiClient : IModelClient, IDisposable
 {
     const string Base = "https://generativelanguage.googleapis.com";
 

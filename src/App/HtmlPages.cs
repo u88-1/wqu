@@ -176,7 +176,14 @@ btn.addEventListener('click',async()=>{
         if (ex is AppException ae)
         {
             tech = ae.Technical ?? ae.Message;
-            switch (ae.Kind)
+            if (ae.Provider != null)
+            {
+                what = "שגיאה מול " + ae.Provider;
+                happened = ae.Message;
+                todo.Add("פתח את ההגדרות המתקדמות ולחץ <b>מנועי AI ומפתחות</b>: בדוק שהמפתח תקין, ששם הדגם עדכני, ושיש יתרה בחשבון.");
+                todo.Add("אפשר לעבור באותו מקום למנוע אחר, למשל Gemini, ולנסות שוב.");
+            }
+            else switch (ae.Kind)
             {
                 case ErrKind.NoKey:
                     what = "חסר מפתח API של Gemini";
@@ -279,7 +286,8 @@ btn.addEventListener('click',async()=>{
     /// <summary>Optional folder from the settings; empty = next to the source file.</summary>
     public static string? OutputDir { get; set; }
 
-    static string SaveContent(string sourceFile, string suffix, string content, string extension)
+    /// <summary>Picks a free file name next to the source (or in the output folder, or the temp folder) and lets <paramref name="write"/> create the file.</summary>
+    static string SaveWith(string sourceFile, string suffix, string extension, Action<string> write)
     {
         var dir = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) ?? ".";
         if (!string.IsNullOrWhiteSpace(OutputDir))
@@ -290,7 +298,7 @@ btn.addEventListener('click',async()=>{
         try
         {
             var p = Unique(dir, baseName, suffix, extension);
-            File.WriteAllText(p, content, new UTF8Encoding(true));
+            write(p);
             return p;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -298,14 +306,25 @@ btn.addEventListener('click',async()=>{
             var tmp = Path.Combine(Path.GetTempPath(), "GeminiMenu");
             Directory.CreateDirectory(tmp);
             var p = Unique(tmp, baseName, suffix, extension);
-            File.WriteAllText(p, content, new UTF8Encoding(true));
+            write(p);
             return p;
         }
     }
+
+    static string SaveContent(string sourceFile, string suffix, string content, string extension) =>
+        SaveWith(sourceFile, suffix, extension, p => File.WriteAllText(p, content, new UTF8Encoding(true)));
 
     public static string Save(string sourceFile, string suffix, string html) => SaveContent(sourceFile, suffix, html, ".html");
 
     public static string SaveText(string sourceFile, string suffix, string text) => SaveContent(sourceFile, suffix, text, ".txt");
 
     public static string SaveSrt(string sourceFile, string suffix, string srt) => SaveContent(sourceFile, suffix, srt, ".srt");
+
+    /// <summary>Word file: real headings, right-to-left paragraphs, review markers highlighted.</summary>
+    public static string SaveDocx(string sourceFile, string suffix, JobResult result)
+    {
+        var title = result.Title ?? (result.Kind == JobKind.Transcribe ? "תמלול" : "סיכום");
+        var text = result.MarkdownText ?? result.PlainText;
+        return SaveWith(sourceFile, suffix, ".docx", p => DocxWriter.Save(p, title, text, result.Note));
+    }
 }

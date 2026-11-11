@@ -64,9 +64,23 @@ public static class BookStyle
         "- אל תוסיף הדגשות או רשימות.\n\n" +
         "פלט: החזר טקסט נקי בלבד, בלי הקדמה, הסברים, הערות ביניים או סיכום, ובלי רשימת סימונים בסוף (היא נוספת אוטומטית).";
 
+    /// <summary>The built-in instruction (shown in Settings so it can be edited).</summary>
+    public static string DefaultPrompt => Rules;
+
+    /// <summary>The user's own full instruction (Settings). Empty = the built-in <see cref="Rules"/>.</summary>
+    public static string CustomPrompt { get; set; } = "";
+
+    /// <summary>Always appended to a custom instruction: the app depends on these conventions to build headings, the review list and the files.</summary>
+    internal const string TechnicalRules =
+        "\n\nכללים טכניים שחלים תמיד, גם אם ההנחיה שלמעלה אומרת אחרת:\n" +
+        "- כותרת משנה כתובה בשורה נפרדת שמתחילה ב-\"## \", וכותרת פרק ב-\"# \". בין פסקאות השאר שורה ריקה.\n" +
+        "- מקום לא ברור או חשוד מסומן [?] או [? הסבר קצר]. סימונים קיימים כמו [לא ברור] או [⚠ ...] נשארים כפי שהם.\n" +
+        "- הסר חותמות זמן. תוויות דוברים (\"דובר 1:\"): הסר אם יש דובר אחד, והשאר בתחילת כל תור דיבור אם יש כמה.\n" +
+        "- החזר טקסט נקי בלבד, בלי הקדמה, הסברים או הערות, ובלי רשימת סימונים בסוף (היא נוספת אוטומטית).";
+
     public static string BuildPrompt(int part, int totalParts, string previousTail)
     {
-        var sb = new StringBuilder(Rules);
+        var sb = new StringBuilder(string.IsNullOrWhiteSpace(CustomPrompt) ? Rules : CustomPrompt.Trim() + TechnicalRules);
         if (totalParts > 1)
         {
             sb.Append($"\n\nהטקסט שלהלן הוא חלק {part} מתוך {totalParts} של טקסט אחד ארוך. ערוך רק את החלק הזה, ");

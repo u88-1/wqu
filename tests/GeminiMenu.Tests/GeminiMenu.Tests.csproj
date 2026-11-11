@@ -11,6 +11,8 @@
     <Compile Include="..\..\src\App\Jobs.cs" />
     <Compile Include="..\..\src\App\BookStyle.cs" />
     <Compile Include="..\..\src\App\GeminiClient.cs" />
+    <Compile Include="..\..\src\App\ModelClients.cs" />
+    <Compile Include="..\..\src\App\DocxWriter.cs" />
     <Compile Include="..\..\src\App\AudioConvert.cs" />
     <Compile Include="..\..\src\App\AppException.cs" />
     <Compile Include="..\..\src\App\Config.cs" />

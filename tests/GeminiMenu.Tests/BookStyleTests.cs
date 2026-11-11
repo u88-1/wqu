@@ -304,4 +304,67 @@ public class BookStyleTests
         Assert.DoesNotContain("מקומות לבירור", r.PlainText);
         Assert.DoesNotContain("סומנו", r.Note);
     }
+
+    // ------------------------------------------------------------ custom instruction and other engines
+
+    [Fact]
+    public void BuildPrompt_CustomInstruction_ReplacesBuiltInRules_ButKeepsTechnicalRules()
+    {
+        BookStyle.CustomPrompt = "ההנחיה שלי: כתוב בגובה העיניים.";
+        try
+        {
+            var p = BookStyle.BuildPrompt(2, 3, "סוף קודם");
+            Assert.Contains("ההנחיה שלי: כתוב בגובה העיניים.", p);
+            Assert.Contains("## ", p);
+            Assert.Contains("[?]", p);
+            Assert.Contains("חלק 2 מתוך 3", p);
+            Assert.Contains("סוף קודם", p);
+            Assert.DoesNotContain("אתה עורך לשוני של ספרים", p);
+        }
+        finally { BookStyle.CustomPrompt = ""; }
+        Assert.Contains("אתה עורך לשוני של ספרים", BookStyle.BuildPrompt(1, 1, ""));
+    }
+
+    sealed class FakeModel : IModelClient
+    {
+        public readonly List<JsonArray> Calls = new();
+        public Task<GenResult> GenerateAsync(JsonArray parts, JsonObject generationConfig, bool disableThinkingWhenPossible, CancellationToken ct)
+        {
+            Calls.Add(parts);
+            return Task.FromResult(new GenResult("## פתיחה\n\nהטקסט הערוך [?] כאן.", "STOP"));
+        }
+    }
+
+    [Fact]
+    public async Task Document_BookStyle_RunsOnAnotherEngine_WithoutGemini()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "gm-book-" + Guid.NewGuid().ToString("N") + ".txt");
+        File.WriteAllText(file, "אה, כאילו, זה טקסט שנאמר בעל פה, נו, בעצם.");
+        try
+        {
+            var model = new FakeModel();
+            var result = await Jobs.RunAsync(JobKind.Summarize, file, client: null, _ => { }, default,
+                getOutputSelection: () => new OutputSelection(OutputMode.DocumentBookStyle), textClient: model);
+
+            Assert.Single(model.Calls);
+            Assert.Contains("הטקסט הערוך", result.PlainText);
+            Assert.Contains("## פתיחה", result.MarkdownText);   // headings are kept for the Word file
+            Assert.Contains("מקומות לבירור", result.MarkdownText);
+            Assert.DoesNotContain("## פתיחה", result.PlainText); // and removed from the plain text
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public async Task Document_WithoutAnyEngine_ReportsMissingKey()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "gm-book-" + Guid.NewGuid().ToString("N") + ".txt");
+        File.WriteAllText(file, "טקסט");
+        try
+        {
+            var ex = await Assert.ThrowsAsync<AppException>(() => Jobs.RunAsync(JobKind.Summarize, file, client: null, _ => { }, default));
+            Assert.Equal(ErrKind.NoKey, ex.Kind);
+        }
+        finally { File.Delete(file); }
+    }
 }

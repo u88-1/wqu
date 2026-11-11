@@ -34,7 +34,7 @@ public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int Ch
         new(c.Timestamps, Math.Clamp(c.ParallelChunks, 1, 4), Math.Clamp(c.ChunkSeconds, 60, 300), c.SummaryDetail);
 }
 
-public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null, string? Title = null, bool IsSummary = false, string? SupplementaryText = null);
+public sealed record JobResult(JobKind Kind, string FileName, string BodyHtml, string PlainText, string? Note, TimeSpan? ProcessingTime = null, string? Title = null, bool IsSummary = false, string? SupplementaryText = null, string? MarkdownText = null);
 
 public static class Jobs
 {
@@ -54,7 +54,16 @@ public static class Jobs
 
     static Jobs() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions? options = null, Func<OutputSelection>? getOutputSelection = null)
+    /// <summary>Audio chunk to text, for engines other than Gemini (the Gemini prompt is not used by them).</summary>
+    public delegate Task<GenResult> AudioTranscriber(string path, CancellationToken ct);
+
+    internal delegate Task<GenResult> ChunkTranscribe(string path, string prompt, CancellationToken ct);
+
+    /// <param name="client">Gemini. May be null when text goes to <paramref name="textClient"/> and audio to <paramref name="audioTranscriber"/>.</param>
+    /// <param name="textClient">Edits and summarizes text. Null = Gemini.</param>
+    /// <param name="audioTranscriber">Transcribes audio. Null = Gemini.</param>
+    public static async Task<JobResult> RunAsync(JobKind kind, string file, GeminiClient? client, Action<string> status, CancellationToken ct, JobOptions? options = null, Func<OutputSelection>? getOutputSelection = null,
+        IModelClient? textClient = null, AudioTranscriber? audioTranscriber = null)
     {
         options ??= new JobOptions();
         if (!File.Exists(file)) throw new AppException(ErrKind.FileProblem, "הקובץ לא נמצא: " + file);
@@ -64,10 +73,11 @@ public static class Jobs
         if (kind == JobKind.Transcribe)
         {
             if (!TranscriptionExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו קובץ שמע או וידאו נתמך: " + ext);
-            return await TranscribeAsync(file, ext, name, client, status, ct, options).ConfigureAwait(false);
+            return await TranscribeAsync(file, ext, name, client, status, ct, options, audioTranscriber).ConfigureAwait(false);
         }
         if (!DocExts.Contains(ext)) throw new AppException(ErrKind.Unsupported, "סוג הקובץ אינו נתמך לסיכום: " + ext);
-        return await SummarizeAsync(file, ext, name, client, status, ct, options,
+        var docClient = textClient ?? client ?? throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
+        return await SummarizeAsync(file, ext, name, docClient, status, ct, options,
             getOutputSelection ?? (() => new OutputSelection(OutputMode.DocumentKeyPoints))).ConfigureAwait(false);
     }
 
@@ -144,8 +154,19 @@ public static class Jobs
         _ => "application/octet-stream",
     };
 
-    static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
+    static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient? client, Action<string> status, CancellationToken ct, JobOptions o, AudioTranscriber? audioTranscriber = null)
     {
+        if (audioTranscriber != null)
+        {
+            // Another engine: always work in short chunks (small uploads, and one stamp per chunk).
+            async Task<GenResult> Other(string path, string prompt, CancellationToken c)
+            {
+                var r = await audioTranscriber(path, c).ConfigureAwait(false);
+                return o.Timestamps && r.Text.Length > 0 ? r with { Text = "[00:00] " + r.Text } : r;
+            }
+            return await TranscribeChunksAsync(file, name, Other, status, ct, o).ConfigureAwait(false);
+        }
+        if (client == null) throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API של Gemini");
         TimeSpan duration;
         try { duration = AudioConvert.GetDuration(file); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
@@ -155,7 +176,7 @@ public static class Jobs
 
         bool unknownButBig = duration == TimeSpan.Zero && new FileInfo(file).Length > UnknownDurationChunkBytes;
         if (duration > TimeSpan.FromSeconds(o.ChunkSeconds) || unknownButBig)
-            return await TranscribeChunksAsync(file, name, client, status, ct, o).ConfigureAwait(false);
+            return await TranscribeChunksAsync(file, name, (p, pr, c) => TranscribeChunkAsync(p, pr, client, c), status, ct, o).ConfigureAwait(false);
 
         string upPath = file;
         string mime = ext == ".mp4" ? "video/mp4" : AudioMime(ext);
@@ -188,7 +209,7 @@ public static class Jobs
                 if (up != null) { await client.DeleteFileAsync(up).ConfigureAwait(false); up = null; }
                 if (temp != null) { try { File.Delete(temp); } catch { } temp = null; }
                 status("התמלול נראה חלקי או נקטע. מחלק לקטעים קצרים יותר ומנסה שוב...");
-                return await TranscribeChunksAsync(file, name, client, status, ct, o).ConfigureAwait(false);
+                return await TranscribeChunksAsync(file, name, (p, pr, c) => TranscribeChunkAsync(p, pr, client, c), status, ct, o).ConfigureAwait(false);
             }
 
             var text = o.Timestamps ? NormalizeTimestamps(res.Text, TimeSpan.Zero) : res.Text;
@@ -201,7 +222,7 @@ public static class Jobs
         }
     }
 
-    static async Task<JobResult> TranscribeChunksAsync(string file, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o)
+    static async Task<JobResult> TranscribeChunksAsync(string file, string name, ChunkTranscribe transcribe, Action<string> status, CancellationToken ct, JobOptions o)
     {
         status("מכין קטעים לתמלול...");
         AudioChunkSet chunkSet;
@@ -252,7 +273,7 @@ public static class Jobs
                     int shown;
                     lock (sync) shown = Math.Min(completed + 1, total);
                     status($"מתמלל קטע {shown} מתוך {total} ({Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)})...");
-                    r = await TranscribeChunkAsync(c.Path, ChunkPrompt(o.Timestamps, context), client, ct).ConfigureAwait(false);
+                    r = await transcribe(c.Path, ChunkPrompt(o.Timestamps, context), ct).ConfigureAwait(false);
                 }
                 catch (AppException e) when (e.Kind is not (ErrKind.NoKey or ErrKind.BadKey))
                 {
@@ -491,7 +512,7 @@ public static class Jobs
         };
     }
 
-    static async Task<SummaryData> RunSummaryAsync(JsonArray parts, GeminiClient client, CancellationToken ct, bool disableThinkingWhenPossible = false)
+    static async Task<SummaryData> RunSummaryAsync(JsonArray parts, IModelClient client, CancellationToken ct, bool disableThinkingWhenPossible = false)
     {
         var cfg = new JsonObject
         {
@@ -503,7 +524,7 @@ public static class Jobs
         try { return SummaryData.Parse(res.Text); }
         catch (Exception ex)
         {
-            throw new AppException(ErrKind.Blocked, "Gemini החזיר סיכום במבנה לא צפוי. נסה שוב.", technical: ex.Message + "\n" + res.Text, inner: ex);
+            throw new AppException(ErrKind.Blocked, "המודל החזיר סיכום במבנה לא צפוי. נסה שוב.", technical: ex.Message + "\n" + res.Text, inner: ex);
         }
     }
 
@@ -526,7 +547,7 @@ public static class Jobs
         return pieces;
     }
 
-    static async Task<SummaryData> SummarizeStagedAsync(string text, string prompt, GeminiClient client, Action<string> status, CancellationToken ct, bool disableThinkingWhenPossible = false)
+    static async Task<SummaryData> SummarizeStagedAsync(string text, string prompt, IModelClient client, Action<string> status, CancellationToken ct, bool disableThinkingWhenPossible = false)
     {
         var pieces = SplitText(text, PieceChars);
         var partial = new List<SummaryData>();
@@ -554,7 +575,7 @@ public static class Jobs
         return await RunSummaryAsync(mergeParts, client, ct, disableThinkingWhenPossible).ConfigureAwait(false);
     }
 
-    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions o, Func<OutputSelection> getOutputSelection)
+    static async Task<JobResult> SummarizeAsync(string file, string ext, string name, IModelClient client, Action<string> status, CancellationToken ct, JobOptions o, Func<OutputSelection> getOutputSelection)
     {
         var parts = new JsonArray();
         UploadedFile? up = null;
@@ -573,8 +594,10 @@ public static class Jobs
                 }
                 else
                 {
+                    if (client is not GeminiClient gemini)
+                        throw new AppException(ErrKind.Unsupported, "קובץ PDF גדול מ-12MB נתמך רק עם Gemini. בחר ב-Gemini כמנוע העריכה והסיכום, או חלק את הקובץ.");
                     status("מעלה את המסמך ל-Gemini...");
-                    up = await client.UploadAsync(file, "application/pdf", ct).ConfigureAwait(false);
+                    up = await gemini.UploadAsync(file, "application/pdf", ct).ConfigureAwait(false);
                     parts.Add(new JsonObject { ["fileData"] = new JsonObject { ["mimeType"] = up.MimeType, ["fileUri"] = up.Uri } });
                 }
             }
@@ -615,11 +638,11 @@ public static class Jobs
         }
         finally
         {
-            if (up != null) await client.DeleteFileAsync(up).ConfigureAwait(false);
+            if (up != null && client is GeminiClient gem) await gem.DeleteFileAsync(up).ConfigureAwait(false);
         }
     }
 
-    public static async Task<JobResult> FormatTranscriptAsync(string fileName, string transcript, OutputSelection selection, GeminiClient client, Action<string> status, CancellationToken ct, JobOptions options)
+    public static async Task<JobResult> FormatTranscriptAsync(string fileName, string transcript, OutputSelection selection, IModelClient client, Action<string> status, CancellationToken ct, JobOptions options)
     {
         if (selection.Mode == OutputMode.TranscriptExact)
             return new JobResult(JobKind.Transcribe, fileName, HtmlPages.TranscriptBody(transcript), transcript, null);
@@ -656,7 +679,7 @@ public static class Jobs
             IsSummary: true);
     }
 
-    static async Task<SummaryData> SummarizeTranscriptAsync(string transcript, OutputSelection selection, JobOptions options, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<SummaryData> SummarizeTranscriptAsync(string transcript, OutputSelection selection, JobOptions options, IModelClient client, Action<string> status, CancellationToken ct)
     {
         var prompt = SummaryPrompt(selection, options.SummaryDetail);
         if (transcript.Length > StageChars)
@@ -671,7 +694,7 @@ public static class Jobs
         return await RunSummaryAsync(parts, client, ct, disableThinkingWhenPossible: true).ConfigureAwait(false);
     }
 
-    static async Task<string> CleanTranscriptAsync(string transcript, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<string> CleanTranscriptAsync(string transcript, IModelClient client, Action<string> status, CancellationToken ct)
     {
         const int cleanPieceChars = 20_000;
         var pieces = transcript.Length > cleanPieceChars ? SplitText(transcript, cleanPieceChars) : new List<string> { transcript };
@@ -699,7 +722,7 @@ public static class Jobs
     /// <summary>One model call: (parts, generation config) -> result. Injected so the book-style flow can be tested without the network.</summary>
     internal delegate Task<GenResult> Generate(JsonArray parts, JsonObject config, CancellationToken ct);
 
-    static Generate GenerateForBook(GeminiClient client) =>
+    static Generate GenerateForBook(IModelClient client) =>
         (parts, cfg, ct) => client.GenerateAsync(parts, cfg, disableThinkingWhenPossible: true, ct);
 
     static JsonObject BookConfig() => new() { ["maxOutputTokens"] = MaxTranscriptTokens };
@@ -766,7 +789,7 @@ public static class Jobs
         return last;
     }
 
-    static async Task<JobResult> BookStyleFromPdfAsync(string name, JsonArray pdfParts, GeminiClient client, Action<string> status, CancellationToken ct)
+    static async Task<JobResult> BookStyleFromPdfAsync(string name, JsonArray pdfParts, IModelClient client, Action<string> status, CancellationToken ct)
     {
         status("מסגנן את המסמך לספר...");
         var parts = new JsonArray(pdfParts.Select(x => x?.DeepClone()).ToArray());
@@ -777,7 +800,7 @@ public static class Jobs
         });
         var res = await client.GenerateAsync(parts, BookConfig(), disableThinkingWhenPossible: true, ct).ConfigureAwait(false);
         var text = BookStyle.NormalizeOutput(res.Text);
-        if (text.Length == 0) throw new AppException(ErrKind.Blocked, "Gemini לא החזיר טקסט מהמסמך. נסה שוב.");
+        if (text.Length == 0) throw new AppException(ErrKind.Blocked, "המודל לא החזיר טקסט מהמסמך. נסה שוב.");
         var warnings = new List<string>();
         if (res.FinishReason == "MAX_TOKENS")
             warnings.Add("המסמך ארוך מכדי לעבד אותו כקובץ PDF בבת אחת, והטקסט נקטע. להמרה מלאה העתק את הטקסט לקובץ TXT או DOCX והפעל שוב.");
@@ -794,7 +817,8 @@ public static class Jobs
         var notes = new List<string> { "הטקסט נערך לסגנון ספר ואינו תמלול מילה במילה." };
         if (flags.Count > 0) notes.Add($"סומנו {flags.Count} מקומות לבירור, והם מופיעים גם ברשימה בסוף.");
         notes.AddRange(warnings);
-        return new JobResult(kind, fileName, HtmlPages.BookBody(text, flags), plain, string.Join(" ", notes), Title: "טקסט בסגנון ספר");
+        return new JobResult(kind, fileName, HtmlPages.BookBody(text, flags), plain, string.Join(" ", notes), Title: "טקסט בסגנון ספר",
+            MarkdownText: review.Length > 0 ? text + "\n\n" + review : text);
     }
 
     // ------------------------------------------------------------------ readers

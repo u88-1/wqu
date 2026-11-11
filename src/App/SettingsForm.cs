@@ -20,7 +20,8 @@ public sealed class SettingsForm : Form
     readonly NumericUpDown _jobs = new();
     readonly CheckBox _updates = new();
 
-    static readonly string[] FormatKeys = { "html", "text", "both", "srt" };
+    static readonly string[] FormatKeys = { "html", "text", "both", "docx", "srt" };
+    const int FormHeight = 700;
     static readonly string[] DetailKeys = { "short", "normal", "detailed" };
 
     public SettingsForm()
@@ -36,7 +37,7 @@ public sealed class SettingsForm : Form
         StartPosition = FormStartPosition.CenterParent;
         Font = new Font("Segoe UI", 10f);
         BackColor = Color.White;
-        ClientSize = new Size(580, 640);
+        ClientSize = new Size(580, FormHeight);
         try
         {
             using var res = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("mic.ico");
@@ -83,7 +84,7 @@ public sealed class SettingsForm : Form
 
         Label("פורמט שמירה כברירת מחדל");
         _format.DropDownStyle = ComboBoxStyle.DropDownList;
-        _format.Items.AddRange(new object[] { "דף HTML", "קובץ טקסט (TXT)", "HTML וגם TXT", "כתוביות (SRT)" });
+        _format.Items.AddRange(new object[] { "דף HTML", "קובץ טקסט (TXT)", "HTML וגם TXT", "קובץ Word (DOCX)", "כתוביות (SRT)" });
         _format.SelectedIndex = Math.Max(0, Array.IndexOf(FormatKeys, _cfg.DefaultFormat));
         Field(_format);
 
@@ -120,7 +121,7 @@ public sealed class SettingsForm : Form
 
         var privacy = new Label
         {
-            Text = "פרטיות: הקבצים נשלחים ל-Google לצורך העיבוד. במפתח חינמי Google רשאית להשתמש בתוכן לשיפור המוצרים שלה, " +
+            Text = "פרטיות: הקבצים והטקסטים נשלחים לספק שנבחר (Google, Anthropic או OpenAI) לצורך העיבוד. במפתח חינמי של Google היא רשאית להשתמש בתוכן לשיפור המוצרים שלה, " +
                    "ולכן להקלטות ומסמכים רגישים מומלץ להשתמש במפתח של חשבון בתשלום.",
             ForeColor = Muted,
             Font = new Font("Segoe UI", 9f),
@@ -131,7 +132,7 @@ public sealed class SettingsForm : Form
         var save = new Button
         {
             Text = "שמור",
-            Bounds = new Rectangle(580 - 20 - 120, 640 - 56, 120, 38),
+            Bounds = new Rectangle(580 - 20 - 120, FormHeight - 56, 120, 38),
             FlatStyle = FlatStyle.Flat,
             BackColor = Accent,
             ForeColor = Color.White,
@@ -139,9 +140,12 @@ public sealed class SettingsForm : Form
         };
         save.FlatAppearance.BorderSize = 0;
         save.Click += (_, _) => SaveAndClose();
-        var cancel = new Button { Text = "ביטול", Bounds = new Rectangle(20, 640 - 56, 100, 38), DialogResult = DialogResult.Cancel };
+        var cancel = new Button { Text = "ביטול", Bounds = new Rectangle(20, FormHeight - 56, 100, 38), DialogResult = DialogResult.Cancel };
+        var providers = new Button { Text = "מנועי AI ומפתחות...", Bounds = new Rectangle(140, FormHeight - 56, 300, 38) };
+        providers.Click += (_, _) => { using var f = new ProvidersForm(_cfg); f.ShowDialog(this); };
         Controls.Add(save);
         Controls.Add(cancel);
+        Controls.Add(providers);
         AcceptButton = save;
         CancelButton = cancel;
     }

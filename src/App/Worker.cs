@@ -32,9 +32,18 @@ public static class Worker
             try
             {
                 var cfg = AppConfig.Load();
-                if (string.IsNullOrWhiteSpace(cfg.ApiKey))
-                    throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
                 HtmlPages.OutputDir = cfg.OutputDir;
+                BookStyle.CustomPrompt = cfg.BookPrompt;
+
+                // Which engine does what. Audio: Gemini or OpenAI. Editing and summaries: Gemini, Claude or OpenAI.
+                bool audioOpenAi = kind == JobKind.Transcribe && cfg.TranscriptionProvider == "openai";
+                bool needsText = kind == JobKind.Summarize || ReadOutputSelection().Mode != OutputMode.TranscriptExact;
+                bool needGemini = (kind == JobKind.Transcribe && !audioOpenAi) || (needsText && cfg.TextProvider == "gemini");
+                bool needOpenAi = audioOpenAi || (needsText && cfg.TextProvider == "openai");
+                bool needClaude = needsText && cfg.TextProvider == "claude";
+                if (needGemini && string.IsNullOrWhiteSpace(cfg.ApiKey)) throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API");
+                if (needOpenAi && string.IsNullOrWhiteSpace(cfg.OpenAiKey)) throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API של OpenAI") { Provider = "OpenAI" };
+                if (needClaude && string.IsNullOrWhiteSpace(cfg.ClaudeKey)) throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API של Claude") { Provider = "Claude" };
 
                 // Newer release? (never blocks the job)
                 _ = Task.Run(async () =>
@@ -47,10 +56,20 @@ public static class Worker
                 using var slot = await JobSlot.AcquireAsync(cfg.MaxConcurrentJobs, status, cts.Token);
                 stopwatch.Restart();
 
-                using var client = new GeminiClient(cfg, status);
-                client.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
+                using var gemini = new GeminiClient(cfg, status);
+                gemini.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
+                using var openAi = new OpenAiClient(cfg.OpenAiKey, cfg.OpenAiModel, cfg.OpenAiTranscribeModel, cfg.TranscriptionLanguage, status);
+                using var claude = new ClaudeClient(cfg.ClaudeKey, cfg.ClaudeModel, status);
+                IModelClient? textClient = cfg.TextProvider switch
+                {
+                    "claude" => string.IsNullOrWhiteSpace(cfg.ClaudeKey) ? null : claude,
+                    "openai" => string.IsNullOrWhiteSpace(cfg.OpenAiKey) ? null : openAi,
+                    _ => string.IsNullOrWhiteSpace(cfg.ApiKey) ? null : gemini,
+                };
+                Jobs.AudioTranscriber? audio = audioOpenAi ? (path, token) => openAi.TranscribeAsync(path, token) : null;
                 var options = JobOptions.From(cfg);
-                var result = await Task.Run(() => Jobs.RunAsync(kind, file, client, status, cts.Token, options, ReadOutputSelection));
+                var geminiOrNull = string.IsNullOrWhiteSpace(cfg.ApiKey) ? null : gemini;
+                var result = await Task.Run(() => Jobs.RunAsync(kind, file, geminiOrNull, status, cts.Token, options, ReadOutputSelection, textClient, audio));
                 var srtSource = result;
                 var suffix = kind == JobKind.Transcribe ? "תמלול" : "סיכום";
                 if (kind == JobKind.Transcribe)
@@ -81,7 +100,13 @@ public static class Worker
                     {
                         suffix = "סיכום";
                     }
-                    result = await Jobs.FormatTranscriptAsync(Path.GetFileName(file), transcript, transcriptSelection, client, status, cts.Token, options);
+                    if (transcriptSelection.Mode != OutputMode.TranscriptExact && textClient == null)
+                    {
+                        // The choice changed while the recording was being transcribed: keep the transcript instead of losing it.
+                        HtmlPages.SaveText(file, "תמלול מלא", transcript);
+                        throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API למנוע העריכה והסיכום שנבחר. התמלול המלא נשמר בקובץ נפרד.");
+                    }
+                    result = await Jobs.FormatTranscriptAsync(Path.GetFileName(file), transcript, transcriptSelection, textClient ?? geminiOrNull!, status, cts.Token, options);
                 }
                 else if (ReadOutputSelection().Mode == OutputMode.DocumentBookStyle)
                 {
@@ -94,6 +119,7 @@ public static class Worker
                     ResultFormat.Text => HtmlPages.SaveText(file, suffix, result.PlainText),
                     ResultFormat.Both => SaveBoth(file, suffix, html, result.PlainText),
                     ResultFormat.Srt => SaveSrt(file, suffix, html, srtSource, result.SupplementaryText),
+                    ResultFormat.Docx => HtmlPages.SaveDocx(file, suffix, result),
                     _ => HtmlPages.Save(file, suffix, html),
                 };
             }

@@ -27,6 +27,9 @@ public abstract class RemoteModelClient : IDisposable
 
     protected abstract string ProviderName { get; }
 
+    /// <summary>HTTP attempts per request (the fallback chain lowers it when another model is ready).</summary>
+    public int Attempts { get; set; } = 5;
+
     protected RemoteModelClient(Action<string>? status, HttpClient? http)
     {
         Status = status ?? (_ => { });
@@ -250,7 +253,7 @@ public sealed class ClaudeClient : RemoteModelClient, IModelClient
             var r = Req(HttpMethod.Post, Endpoint + "/messages");
             r.Content = new StringContent(body, Encoding.UTF8, "application/json");
             return r;
-        }, 5, ct, GenerateTimeout).ConfigureAwait(false);
+        }, Math.Max(1, Attempts), ct, GenerateTimeout).ConfigureAwait(false);
 
         var root = JsonNode.Parse(reply.Body);
         var sb = new StringBuilder();
@@ -367,7 +370,7 @@ public sealed class OpenAiClient : RemoteModelClient, IModelClient
             var r = Req(HttpMethod.Post, Endpoint + "/chat/completions");
             r.Content = new StringContent(body, Encoding.UTF8, "application/json");
             return r;
-        }, 5, ct, GenerateTimeout);
+        }, Math.Max(1, Attempts), ct, GenerateTimeout);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         Reply reply;
@@ -410,7 +413,7 @@ public sealed class OpenAiClient : RemoteModelClient, IModelClient
             var r = Req(HttpMethod.Post, Endpoint + "/audio/transcriptions");
             r.Content = form;
             return r;
-        }, 5, ct, GenerateTimeout).ConfigureAwait(false);
+        }, Math.Max(1, Attempts), ct, GenerateTimeout).ConfigureAwait(false);
 
         var text = ((string?)JsonNode.Parse(reply.Body)?["text"] ?? "").Trim();
         // Silence is a legitimate result: the caller's sanity check decides what to do with it.

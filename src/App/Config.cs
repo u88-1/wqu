@@ -13,6 +13,18 @@ public sealed class AppConfig
     public string Model { get; set; } = "auto";
     public string FallbackModel { get; set; } = "";
 
+    // ---- automatic fallback between models of the SAME provider (never between providers)
+    /// <summary>On a rate limit, overload, timeout or a missing model: move to the next model of the same provider.</summary>
+    public bool AutoFallback { get; set; } = true;
+    /// <summary>Extra Gemini models in priority order (comma or line separated). Empty = the model above, FallbackModel, then discovery.</summary>
+    public string GeminiModels { get; set; } = "";
+    /// <summary>Claude models in priority order for editing and summaries. Empty = only ClaudeModel.</summary>
+    public string ClaudeModels { get; set; } = "";
+    /// <summary>OpenAI models in priority order for editing and summaries. Empty = only OpenAiModel.</summary>
+    public string OpenAiModels { get; set; } = "";
+    /// <summary>OpenAI transcription models in priority order. Empty = only OpenAiTranscribeModel.</summary>
+    public string OpenAiTranscribeModels { get; set; } = "";
+
     // ---- other providers (keys are stored encrypted, like the Gemini key)
     public string ClaudeKey { get; set; } = "";
     public string ClaudeKeyProtected { get; set; } = "";
@@ -116,6 +128,10 @@ public sealed class AppConfig
             if (string.IsNullOrWhiteSpace(cfg.OpenAiModel)) cfg.OpenAiModel = OpenAiClient.DefaultModel;
             if (string.IsNullOrWhiteSpace(cfg.OpenAiTranscribeModel)) cfg.OpenAiTranscribeModel = OpenAiClient.DefaultTranscribeModel;
             cfg.BookPrompt ??= "";
+            cfg.GeminiModels ??= "";
+            cfg.ClaudeModels ??= "";
+            cfg.OpenAiModels ??= "";
+            cfg.OpenAiTranscribeModels ??= "";
             if (string.IsNullOrWhiteSpace(cfg.Model)) cfg.Model = "auto";
             cfg.ParallelChunks = Math.Clamp(cfg.ParallelChunks, 1, 4);
             cfg.ChunkSeconds = Math.Clamp(cfg.ChunkSeconds, 60, 300);

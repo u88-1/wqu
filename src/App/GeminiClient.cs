@@ -4,7 +4,8 @@ using System.Text.Json.Nodes;
 
 namespace GeminiMenu;
 
-public sealed record GenResult(string Text, string? FinishReason);
+/// <param name="Model">The model that produced the text (set by the fallback chain).</param>
+public sealed record GenResult(string Text, string? FinishReason, string? Model = null);
 public sealed record UploadedFile(string Name, string Uri, string MimeType);
 
 public sealed class GeminiClient : IModelClient, IDisposable
@@ -89,7 +90,7 @@ public sealed class GeminiClient : IModelClient, IDisposable
 
     // ---------------------------------------------------------------- transport
 
-    async Task<Reply> SendAsync(Func<HttpRequestMessage> make, int maxAttempts, CancellationToken ct, TimeSpan? timeout = null)
+    async Task<Reply> SendAsync(Func<HttpRequestMessage> make, int maxAttempts, CancellationToken ct, TimeSpan? timeout = null, int quotaAttempts = int.MaxValue)
     {
         int timeouts = 0;
         for (int attempt = 1; ; attempt++)
@@ -127,6 +128,8 @@ public sealed class GeminiClient : IModelClient, IDisposable
             // A request that timed out once usually will again: allow one retry, not five.
             if (failure.Technical == "timeout" && ++timeouts >= 2) throw failure;
             if (!Retryable(failure) || attempt >= maxAttempts) throw failure;
+            // Another model is ready and rate limits are per model: give up on this one after a short wait.
+            if (failure.Kind == ErrKind.Quota && attempt >= quotaAttempts) throw failure;
 
             var wait = Backoff(attempt);
             var why = failure.Kind == ErrKind.Quota ? "Gemini מגביל את קצב הבקשות" : failure.Kind == ErrKind.Network ? "בעיית תקשורת" : "Gemini עמוס כרגע";
@@ -265,52 +268,43 @@ public sealed class GeminiClient : IModelClient, IDisposable
         return _discovered;
     }
 
+    /// <summary>One breaker per client, and a client lives for one task: a model that keeps failing is skipped by the following chunks.</summary>
+    public ModelHealth Health { get; } = new();
+
+    /// <summary>Models in priority order for this call: the chosen model, the configured list, then FallbackModel.</summary>
+    List<string> ConfiguredModels()
+    {
+        bool auto = string.IsNullOrWhiteSpace(_cfg.Model) || _cfg.Model == "auto";
+        var list = new List<string> { auto ? _cfg.ResolvedModel : _cfg.Model };
+        if (_cfg.AutoFallback)
+        {
+            list.AddRange(ModelFallback.ParseList(_cfg.GeminiModels));
+            list.Add(_cfg.FallbackModel);
+        }
+        return list;
+    }
+
     /// <param name="parts">Gemini "parts" array. Built per call; this method serializes it once.</param>
     public async Task<GenResult> GenerateAsync(JsonArray parts, JsonObject generationConfig, bool disableThinkingWhenPossible, CancellationToken ct)
     {
         bool auto = string.IsNullOrWhiteSpace(_cfg.Model) || _cfg.Model == "auto";
-        var queue = new Queue<string>();
-        var tried = new HashSet<string>();
-        void Enqueue(string? m)
-        {
-            if (!string.IsNullOrWhiteSpace(m) && m != "auto" && !tried.Contains(m) && !queue.Contains(m)) queue.Enqueue(m!);
-        }
-        if (auto) Enqueue(_cfg.ResolvedModel); else Enqueue(_cfg.Model);
-        Enqueue(_cfg.FallbackModel);
+        var models = ConfiguredModels();
+        var chain = new ModelChain(Health, "Gemini", _status, Log.Write);
+        // With fallback off, only the chosen model is used (and the discovery list is not consulted).
+        Func<CancellationToken, Task<IEnumerable<string>>>? more = _cfg.AutoFallback
+            ? async token => await DiscoverModelsAsync(token).ConfigureAwait(false)
+            : null;
+        int maxModels = Math.Max(4, models.Count);
 
-        bool discovered = false;
-        var errors = new List<string>();
-        AppException? last = null;
-        const int MaxModels = 4;
-
-        while (tried.Count < MaxModels)
+        return await chain.RunAsync(models, more, async (call, token) =>
         {
-            if (queue.Count == 0)
-            {
-                if (discovered) break;
-                discovered = true;
-                foreach (var m in await DiscoverModelsAsync(ct).ConfigureAwait(false)) Enqueue(m);
-                if (queue.Count == 0) break;
-            }
-            var model = queue.Dequeue();
-            tried.Add(model);
-            try
-            {
-                var res = await GenerateOnceAsync(model, parts, generationConfig, disableThinkingWhenPossible, tried.Count == 1 ? 5 : 3, ct).ConfigureAwait(false);
-                if (auto && model != _cfg.ResolvedModel) { try { ModelWorked?.Invoke(model); } catch { } }
-                return res;
-            }
-            catch (AppException e) when (e.Kind is ErrKind.Overloaded or ErrKind.Quota or ErrKind.NotFound or ErrKind.Network)
-            {
-                last = e;
-                errors.Add($"[{model}] {e.Technical ?? e.Message}");
-                _status("עובר למודל חלופי של Gemini...");
-            }
-        }
-        throw new AppException(last?.Kind ?? ErrKind.Other, last?.Message ?? "לא נמצא מודל זמין", last?.Status ?? 0, string.Join("\n", errors));
+            var res = await GenerateOnceAsync(call.Model, parts, generationConfig, disableThinkingWhenPossible, call.Attempts, call.QuickSwitch, token).ConfigureAwait(false);
+            if (auto && call.Model != _cfg.ResolvedModel) { try { ModelWorked?.Invoke(call.Model); } catch { } }
+            return res;
+        }, maxModels, ct).ConfigureAwait(false);
     }
 
-    async Task<GenResult> GenerateOnceAsync(string model, JsonArray parts, JsonObject genCfg, bool noThink, int attempts, CancellationToken ct)
+    async Task<GenResult> GenerateOnceAsync(string model, JsonArray parts, JsonObject genCfg, bool noThink, int attempts, bool quickSwitch, CancellationToken ct)
     {
         // Gemini 2.5 Flash: thinkingBudget = 0. Gemini 3.x Flash: thinkingLevel = "minimal" (default is medium/high,
         // which made a 3-minute transcription take minutes). If a model rejects it, retry once without it.
@@ -334,7 +328,7 @@ public sealed class GeminiClient : IModelClient, IDisposable
             var r = Req(HttpMethod.Post, $"{Base}/v1beta/models/{model}:generateContent");
             r.Content = new StringContent(body, Encoding.UTF8, "application/json");
             return r;
-        }, attempts, ct, GenerateTimeout);
+        }, attempts, ct, GenerateTimeout, quickSwitch ? 2 : int.MaxValue);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         Log.Write($"generate: model={model}, thinkingLevel={(levelModel ? "minimal" : "default")}");

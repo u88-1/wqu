@@ -19,6 +19,11 @@ public sealed class ProvidersForm : Form
     readonly TextBox _openAiModel = new();
     readonly TextBox _openAiTranscribeModel = new();
     readonly TextBox _language = new();
+    readonly CheckBox _autoFallback = new();
+    readonly TextBox _geminiModels = new();
+    readonly TextBox _claudeModels = new();
+    readonly TextBox _openAiModels = new();
+    readonly TextBox _openAiTranscribeModels = new();
     readonly TextBox _bookPrompt = new();
 
     static readonly string[] AudioKeys = { "gemini", "openai" };
@@ -114,6 +119,19 @@ public sealed class ProvidersForm : Form
         ModelRow("שפת ההקלטות ל-OpenAI (קוד, למשל he; ריק = זיהוי אוטומטי)", _language, _cfg.TranscriptionLanguage);
         Label("שמות הדגמים משתנים עם הזמן. אם מופיעה שגיאה שהדגם לא נמצא, עדכן אותו לפי הרשימה באתר של הספק.", muted: true, height: 36);
 
+        // ---- automatic fallback between models of the same provider
+        Label("מעבר אוטומטי בין דגמים של אותו ספק");
+        _autoFallback.Text = "אם דגם נכשל (עומס, מגבלת קצב, תקלת תקשורת או דגם שלא נמצא), עבור לדגם הבא של אותו ספק";
+        _autoFallback.Checked = _cfg.AutoFallback;
+        _autoFallback.Bounds = new Rectangle(20, y, 540, 26);
+        body.Controls.Add(_autoFallback);
+        y += 32;
+        Label("העבודה אף פעם לא עוברת לספק אחר. מפתח לא תקין מפסיק את העבודה מיד. ריק = רק הדגם שלמעלה (ב-Gemini גם דגם הגיבוי והגילוי האוטומטי).", muted: true, height: 36);
+        ModelRow("דגמי Gemini נוספים לפי סדר (מופרדים בפסיק)", _geminiModels, _cfg.GeminiModels);
+        ModelRow("דגמי Claude נוספים לפי סדר", _claudeModels, _cfg.ClaudeModels);
+        ModelRow("דגמי OpenAI נוספים לעריכה וסיכום", _openAiModels, _cfg.OpenAiModels);
+        ModelRow("דגמי OpenAI נוספים לתמלול (למשל gpt-4o-mini-transcribe, whisper-1)", _openAiTranscribeModels, _cfg.OpenAiTranscribeModels);
+
         // ---- book style instruction
         Label("הנחיית עריכה בסגנון ספר (אופציונלי)");
         Label("אפשר להדביק כאן הנחיה מלאה משלך. ריק = ההנחיה המובנית. הכללים הטכניים (כותרות, סימון [?]) נוספים אוטומטית.", muted: true, height: 36);
@@ -175,6 +193,8 @@ public sealed class ProvidersForm : Form
         finally { button.Enabled = true; }
     }
 
+    static string NormalizeList(string text) => string.Join(", ", ModelFallback.ParseList(text));
+
     void SaveAndClose()
     {
         try
@@ -208,6 +228,11 @@ public sealed class ProvidersForm : Form
             _cfg.OpenAiModel = string.IsNullOrWhiteSpace(_openAiModel.Text) ? OpenAiClient.DefaultModel : _openAiModel.Text.Trim();
             _cfg.OpenAiTranscribeModel = string.IsNullOrWhiteSpace(_openAiTranscribeModel.Text) ? OpenAiClient.DefaultTranscribeModel : _openAiTranscribeModel.Text.Trim();
             _cfg.TranscriptionLanguage = _language.Text.Trim();
+            _cfg.AutoFallback = _autoFallback.Checked;
+            _cfg.GeminiModels = NormalizeList(_geminiModels.Text);
+            _cfg.ClaudeModels = NormalizeList(_claudeModels.Text);
+            _cfg.OpenAiModels = NormalizeList(_openAiModels.Text);
+            _cfg.OpenAiTranscribeModels = NormalizeList(_openAiTranscribeModels.Text);
             _cfg.BookPrompt = prompt;
             _cfg.Save();
             DialogResult = DialogResult.OK;

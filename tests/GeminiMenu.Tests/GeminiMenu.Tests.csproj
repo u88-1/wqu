@@ -12,6 +12,9 @@
     <Compile Include="..\..\src\App\BookStyle.cs" />
     <Compile Include="..\..\src\App\GeminiClient.cs" />
     <Compile Include="..\..\src\App\ModelClients.cs" />
+    <Compile Include="..\..\src\App\LiveTranscript.cs" />
+    <Compile Include="..\..\src\App\PartialFile.cs" />
+    <Compile Include="..\..\src\App\LiveServer.cs" />
     <Compile Include="..\..\src\App\ModelChain.cs" />
     <Compile Include="..\..\src\App\ModelFallbackClients.cs" />
     <Compile Include="..\..\src\App\DocxWriter.cs" />

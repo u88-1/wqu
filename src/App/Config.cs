@@ -13,6 +13,9 @@ public sealed class AppConfig
     public string Model { get; set; } = "auto";
     public string FallbackModel { get; set; } = "";
 
+    /// <summary>Open a page in the browser when a transcription starts and fill it in while the work goes on.</summary>
+    public bool LiveView { get; set; } = true;
+
     // ---- automatic fallback between models of the SAME provider (never between providers)
     /// <summary>On a rate limit, overload, timeout or a missing model: move to the next model of the same provider.</summary>
     public bool AutoFallback { get; set; } = true;

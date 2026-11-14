@@ -28,7 +28,8 @@ public enum OutputMode
 public sealed record OutputSelection(OutputMode Mode, string CustomInstruction = "");
 
 /// <summary>Per-run options taken from the settings window.</summary>
-public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal")
+/// <param name="Live">Told about every finished chunk (live page, partial file). Null = nobody listens.</param>
+public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal", ILiveSink? Live = null)
 {
     public static JobOptions From(AppConfig c) =>
         new(c.Timestamps, Math.Clamp(c.ParallelChunks, 1, 4), Math.Clamp(c.ChunkSeconds, 60, 300), c.SummaryDetail);
@@ -242,14 +243,23 @@ public static class Jobs
             string? fatal = null;
             AppException? firstError = null;
             var gaps = new List<string>();
-            var modelUse = new List<(string Model, string Range)>();
+            var modelUse = new List<(string Model, string Range, TimeSpan Start)>();
 
             void RecordModel(AudioChunk c, string? model)
             {
                 if (string.IsNullOrEmpty(model)) return;
                 var range = $"{Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)}";
-                lock (sync) modelUse.Add((model, range));
+                lock (sync) modelUse.Add((model, range, c.AbsStart));
                 Log.Write($"chunk {range} transcribed by {model}");
+            }
+
+            // One report per TOP-LEVEL chunk (halves of a split chunk are part of it), in whatever order they finish.
+            void Report(int index, int count, AudioChunk c, string text)
+            {
+                if (o.Live == null) return;
+                string? model;
+                lock (sync) model = modelUse.Where(m => m.Start >= c.AbsStart && m.Start < c.AbsEnd).Select(m => m.Model).Distinct().FirstOrDefault();
+                o.Live.ChunkDone(new LiveChunk(index, count, c.AbsStart, c.AbsEnd, text, model, text.Contains("[⚠ הקטע")));
             }
 
             string GapText(AudioChunk c)
@@ -320,18 +330,27 @@ public static class Jobs
             }
 
             string merged = "";
+            var topLevel = chunkSet.Chunks.ToList();
+            o.Live?.Begin(topLevel.Count);
             if (o.Parallel <= 1)
             {
                 // In order: each chunk sees the end of the previous one, so speaker labels stay consistent.
-                foreach (var c in chunkSet.Chunks.ToList())
+                for (int i = 0; i < topLevel.Count; i++)
                 {
-                    var text = await Process(c, ContextTail(merged), 0).ConfigureAwait(false);
+                    var text = await Process(topLevel[i], ContextTail(merged), 0).ConfigureAwait(false);
                     merged = MergeChunkTranscripts(merged, text);
+                    Report(i, topLevel.Count, topLevel[i], text);
                 }
             }
             else
             {
-                var texts = await Task.WhenAll(chunkSet.Chunks.ToList().Select(c => Process(c, "", 0))).ConfigureAwait(false);
+                async Task<string> ProcessAndReport(int i, AudioChunk c)
+                {
+                    var text = await Process(c, "", 0).ConfigureAwait(false);
+                    Report(i, topLevel.Count, c, text);
+                    return text;
+                }
+                var texts = await Task.WhenAll(topLevel.Select((c, i) => ProcessAndReport(i, c))).ConfigureAwait(false);
                 foreach (var t in texts) merged = MergeChunkTranscripts(merged, t);
             }
 

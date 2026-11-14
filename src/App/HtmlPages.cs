@@ -165,6 +165,89 @@ btn.addEventListener('click',async()=>{
         return Shell(title, meta, r.BodyHtml, r.PlainText, r.Note == null ? null : E(r.Note), isSummary: r.IsSummary);
     }
 
+    // ------------------------------------------------------------------ live page
+
+    const string LiveCss = @"
+.pending{color:var(--muted);padding:10px 4px 0;font-size:.95rem;display:none}
+.pending.err{color:var(--err)}
+.saved{color:var(--muted);font-size:.85rem;margin-top:10px;display:none;word-break:break-all}
+#note{display:none}
+@media print{.pending,.saved{display:none!important}}";
+
+    // Polls the state of the local server. The text only grows at the end, so new paragraphs are appended and the
+    // scroll position is never touched, except to follow the end while the reader is already at the end.
+    const string LiveScript = """
+(function(){
+let seq=-1,last='',done=false,fails=0,PLAIN='';
+const $=function(id){return document.getElementById(id)};
+const content=$('content'),pending=$('pending'),note=$('note'),saved=$('saved'),btn=$('copy'),h1=$('title');
+function atBottom(){return window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-80}
+function setHtml(html){
+  if(html===last)return;
+  const follow=atBottom(),y=window.scrollY;
+  if(last&&html.indexOf(last)===0){content.insertAdjacentHTML('beforeend',html.slice(last.length))}
+  else{content.innerHTML=html;window.scrollTo(0,y)}
+  last=html;
+  if(follow)window.scrollTo(0,document.documentElement.scrollHeight);
+}
+function apply(s){
+  seq=s.seq;PLAIN=s.plain||'';
+  if(s.title){h1.textContent=s.title;document.title=s.title}
+  setHtml(s.html||'');
+  pending.textContent=s.pending||'';
+  pending.style.display=s.pending?'block':'none';
+  pending.className='pending'+(s.phase==='error'?' err':'');
+  if(s.note){note.textContent=s.note;note.style.display='block'}
+  if(s.saved){saved.textContent='נשמר ב: '+s.saved;saved.style.display='block'}
+  if(s.phase==='done'||s.phase==='error'||s.phase==='cancelled'){
+    done=true;
+    fetch('ack?seq='+seq,{cache:'no-store'}).catch(function(){});
+  }
+}
+async function tick(){
+  try{
+    const r=await fetch('state?since='+seq,{cache:'no-store'});
+    if(r.status===200){fails=0;apply(await r.json())}
+    else if(r.status===204){fails=0}
+    else throw new Error('status '+r.status);
+  }catch(e){
+    if(++fails>=5){
+      pending.textContent='החיבור לתוכנה נסגר. מה שתומלל נשמר בקובץ.';
+      pending.style.display='block';
+      return;
+    }
+  }
+  if(!done)setTimeout(tick,1000);
+}
+function fallback(t){const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}a.remove();return ok}
+btn.addEventListener('click',async function(){
+  let ok=false;
+  try{await navigator.clipboard.writeText(PLAIN);ok=true}catch(e){ok=fallback(PLAIN)}
+  const old=btn.textContent;btn.textContent=ok?'הועתק ✓':'ההעתקה נכשלה';btn.classList.toggle('done',ok);
+  setTimeout(function(){btn.textContent=old;btn.classList.remove('done')},2000);
+});
+tick();
+})();
+""";
+
+    /// <summary>The page opened when a transcription starts; the local server feeds it (see LiveServer).</summary>
+    public static string LivePage(string title, string meta)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<!DOCTYPE html>");
+        sb.AppendLine("<html lang=\"he\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        sb.AppendLine("<title>" + E(title) + "</title><style>" + Css + LiveCss + "</style></head><body><div class=\"wrap\">");
+        sb.AppendLine("<header><div><h1 id=\"title\">" + E(title) + "</h1><div class=\"meta\">" + E(meta) + "</div></div>");
+        sb.AppendLine("<button id=\"copy\" type=\"button\">העתק הכל</button></header>");
+        sb.AppendLine("<div class=\"note\" id=\"note\"></div>");
+        sb.AppendLine("<div class=\"card\" id=\"content\"></div>");
+        sb.AppendLine("<div class=\"pending\" id=\"pending\" style=\"display:block\">מתמלל...</div>");
+        sb.AppendLine("<div class=\"saved\" id=\"saved\"></div>");
+        sb.AppendLine("<footer>הופק באמצעות בינה מלאכותית. ייתכנו אי-דיוקים, ולכן כדאי לבדוק פרטים חשובים מול המקור.</footer></div>");
+        sb.AppendLine("<script>" + LiveScript + "</script></body></html>");
+        return sb.ToString();
+    }
+
     // ------------------------------------------------------------------ errors
 
     public static string ErrorPage(Exception ex, string fileName, JobKind kind)

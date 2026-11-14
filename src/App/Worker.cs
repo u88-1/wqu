@@ -60,15 +60,35 @@ public static class Worker
 
                 using var gemini = new GeminiClient(cfg, status);
                 gemini.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
-                using var openAi = new OpenAiClient(cfg.OpenAiKey, cfg.OpenAiModel, cfg.OpenAiTranscribeModel, cfg.TranscriptionLanguage, status);
-                using var claude = new ClaudeClient(cfg.ClaudeKey, cfg.ClaudeModel, status);
+                // One HTTP client for all models of a provider; each provider keeps to its own models (never switches provider).
+                using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                List<string> ModelList(string primary, string extra, string defaultModel)
+                {
+                    var list = new List<string> { string.IsNullOrWhiteSpace(primary) ? defaultModel : primary.Trim() };
+                    if (cfg.AutoFallback) list.AddRange(ModelFallback.ParseList(extra));
+                    return list.Distinct().ToList();
+                }
                 IModelClient? textClient = cfg.TextProvider switch
                 {
-                    "claude" => string.IsNullOrWhiteSpace(cfg.ClaudeKey) ? null : claude,
-                    "openai" => string.IsNullOrWhiteSpace(cfg.OpenAiKey) ? null : openAi,
+                    "claude" => string.IsNullOrWhiteSpace(cfg.ClaudeKey) ? null
+                        : new FallbackModelClient("Claude", ModelList(cfg.ClaudeModel, cfg.ClaudeModels, ClaudeClient.DefaultModel),
+                            (model, attempts) => new ClaudeClient(cfg.ClaudeKey, model, status, http) { Attempts = attempts }, status),
+                    "openai" => string.IsNullOrWhiteSpace(cfg.OpenAiKey) ? null
+                        : new FallbackModelClient("OpenAI", ModelList(cfg.OpenAiModel, cfg.OpenAiModels, OpenAiClient.DefaultModel),
+                            (model, attempts) => new OpenAiClient(cfg.OpenAiKey, model, cfg.OpenAiTranscribeModel, cfg.TranscriptionLanguage, status, http) { Attempts = attempts }, status),
                     _ => string.IsNullOrWhiteSpace(cfg.ApiKey) ? null : gemini,
                 };
-                Jobs.AudioTranscriber? audio = audioOpenAi ? (path, token) => openAi.TranscribeAsync(path, token) : null;
+                Jobs.AudioTranscriber? audio = null;
+                if (audioOpenAi)
+                {
+                    var transcriber = new FallbackTranscriber("OpenAI", ModelList(cfg.OpenAiTranscribeModel, cfg.OpenAiTranscribeModels, OpenAiClient.DefaultTranscribeModel),
+                        (model, attempts) =>
+                        {
+                            var c = new OpenAiClient(cfg.OpenAiKey, cfg.OpenAiModel, model, cfg.TranscriptionLanguage, status, http) { Attempts = attempts };
+                            return (path, token) => c.TranscribeAsync(path, token);
+                        }, status);
+                    audio = (path, token) => transcriber.TranscribeAsync(path, token);
+                }
                 var options = JobOptions.From(cfg);
                 var geminiOrNull = string.IsNullOrWhiteSpace(cfg.ApiKey) ? null : gemini;
                 var result = await Task.Run(() => Jobs.RunAsync(kind, file, geminiOrNull, status, cts.Token, options, ReadOutputSelection, textClient, audio));

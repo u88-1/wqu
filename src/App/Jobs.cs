@@ -213,7 +213,8 @@ public static class Jobs
             }
 
             var text = o.Timestamps ? NormalizeTimestamps(res.Text, TimeSpan.Zero) : res.Text;
-            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text, null);
+            return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(text), text,
+                string.Join(" ", ModelNotes(res.Model == null ? Array.Empty<string>() : new[] { res.Model })) is { Length: > 0 } single ? single : null);
         }
         finally
         {
@@ -241,6 +242,15 @@ public static class Jobs
             string? fatal = null;
             AppException? firstError = null;
             var gaps = new List<string>();
+            var modelUse = new List<(string Model, string Range)>();
+
+            void RecordModel(AudioChunk c, string? model)
+            {
+                if (string.IsNullOrEmpty(model)) return;
+                var range = $"{Fmt(c.AbsStart)}–{Fmt(c.AbsEnd)}";
+                lock (sync) modelUse.Add((model, range));
+                Log.Write($"chunk {range} transcribed by {model}");
+            }
 
             string GapText(AudioChunk c)
             {
@@ -305,6 +315,7 @@ public static class Jobs
                 }
 
                 lock (sync) { completed++; successes++; }
+                RecordModel(c, r.Model);
                 return o.Timestamps ? NormalizeTimestamps(r.Text, c.AbsStart - c.CoreStart) : r.Text;
             }
 
@@ -335,10 +346,26 @@ public static class Jobs
                     : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.",
             };
             if (o.Parallel > 1) notes.Add("הקטעים תומללו במקביל, ולכן תוויות הדוברים עלולות להתחלף בין קטעים.");
+            notes.AddRange(ModelNotes(modelUse.Select(x => x.Model)));
             if (gaps.Count > 0) notes.Add("קטעים שלא תומללו במלואם: " + string.Join(", ", gaps) + ".");
             if (fatal != null) notes.Add("התמלול הופסק באמצע (" + fatal + "). מה שתומלל עד כה נשמר.");
             return new JobResult(JobKind.Transcribe, name, HtmlPages.TranscriptBody(final), final, string.Join(" ", notes));
         }
+    }
+
+    /// <summary>Which model transcribed, and a warning when several did (style and speaker labels may differ between them).</summary>
+    internal static List<string> ModelNotes(IEnumerable<string> modelPerChunk)
+    {
+        var notes = new List<string>();
+        var groups = modelPerChunk.GroupBy(m => m).OrderByDescending(g => g.Count()).ToList();
+        if (groups.Count == 1)
+            notes.Add($"הדגם שתמלל: {groups[0].Key}.");
+        else if (groups.Count > 1)
+        {
+            notes.Add("התמלול בוצע בכמה דגמים: " + string.Join(", ", groups.Select(g => $"{g.Key} ({g.Count()} קטעים)")) +
+                      ". ייתכנו הבדלים בסגנון ובתוויות הדוברים בין הקטעים.");
+        }
+        return notes;
     }
 
     // ------------------------------------------------------------------ output sanity check

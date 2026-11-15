@@ -186,6 +186,122 @@ public class ModelChainTests
         Assert.Contains("[a] boom", ex.Technical);
     }
 
+    sealed class FakeClock
+    {
+        public DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        public void Advance(int seconds) => Now = Now.AddSeconds(seconds);
+    }
+
+    [Fact]
+    public void Breaker_TemporaryFailure_GetsOneProbeAfterThePause_NotBefore()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(2, TimeSpan.FromSeconds(60), () => clock.Now);
+        health.Failure("a", "429");
+        Assert.True(health.Failure("a", "429"));
+        Assert.True(health.IsDown("a"));
+
+        clock.Advance(59);
+        Assert.True(health.IsDown("a"));
+
+        clock.Advance(2);
+        Assert.False(health.IsDown("a")); // the probe
+        Assert.True(health.IsDown("a"));  // the other chunks keep skipping it meanwhile
+    }
+
+    [Fact]
+    public void Breaker_ProbeThatWorks_BringsTheModelBack()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, TimeSpan.FromSeconds(60), () => clock.Now);
+        health.Failure("a", "429");
+        clock.Advance(61);
+        Assert.False(health.IsDown("a"));
+        health.Success("a");
+        Assert.False(health.IsDown("a"));
+        Assert.False(health.IsDown("a"));
+        Assert.Empty(health.DownModels());
+        Assert.True(health.Failure("a", "429")); // down again from scratch: a new marking
+    }
+
+    [Fact]
+    public void Breaker_ProbeThatFails_StartsAnotherPause()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, TimeSpan.FromSeconds(60), () => clock.Now);
+        health.Failure("a", "429");
+        clock.Advance(61);
+        Assert.False(health.IsDown("a"));
+        Assert.False(health.Failure("a", "429")); // not a new marking: it was already on the list
+        clock.Advance(30);
+        Assert.True(health.IsDown("a"));
+        clock.Advance(31);
+        Assert.False(health.IsDown("a"));
+    }
+
+    [Fact]
+    public void Breaker_ModelThatIsMissingOrNotAllowed_IsNeverProbed()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, TimeSpan.FromSeconds(60), () => clock.Now);
+        health.Failure("a", "404", temporary: false);
+        clock.Advance(3600);
+        Assert.True(health.IsDown("a"));
+    }
+
+    [Fact]
+    public void Breaker_InfiniteRetryAfter_KeepsTheOldBehavior()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, Timeout.InfiniteTimeSpan, () => clock.Now);
+        health.Failure("a", "429");
+        clock.Advance(100000);
+        Assert.True(health.IsDown("a"));
+    }
+
+    [Fact]
+    public async Task Chain_ProbesADownModelAfterThePause_AndUsesItAgainWhenItRecovers()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, TimeSpan.FromSeconds(60), () => clock.Now);
+        var chain = Chain(health);
+        bool aWorks = false;
+        var calls = new List<string>();
+        Task<GenResult> Call(ModelCall c, CancellationToken _)
+        {
+            calls.Add(c.Model);
+            return c.Model == "a" && !aWorks ? throw Err(ErrKind.Quota) : Ok(c.Model);
+        }
+
+        await chain.RunAsync(new[] { "a", "b" }, null, Call, 4, default);   // a fails, b answers
+        calls.Clear();
+        await chain.RunAsync(new[] { "a", "b" }, null, Call, 4, default);   // a is skipped
+        Assert.Equal(new[] { "b" }, calls);
+
+        clock.Advance(61);
+        aWorks = true;
+        calls.Clear();
+        var r = await chain.RunAsync(new[] { "a", "b" }, null, Call, 4, default); // the probe
+        Assert.Equal("a", r.Model);
+        Assert.Equal(new[] { "a" }, calls);
+        Assert.False(health.IsDown("a"));
+    }
+
+    [Fact]
+    public async Task Chain_NotFoundModel_IsNotProbedAgain()
+    {
+        var clock = new FakeClock();
+        var health = new ModelHealth(1, TimeSpan.FromSeconds(60), () => clock.Now);
+        var chain = Chain(health);
+        var calls = new List<string>();
+        Task<GenResult> Call(ModelCall c, CancellationToken _) { calls.Add(c.Model); return c.Model == "a" ? throw Err(ErrKind.NotFound) : Ok(c.Model); }
+        await chain.RunAsync(new[] { "a", "b" }, null, Call, 4, default);
+        clock.Advance(3600);
+        calls.Clear();
+        await chain.RunAsync(new[] { "a", "b" }, null, Call, 4, default);
+        Assert.Equal(new[] { "b" }, calls);
+    }
+
     [Fact]
     public async Task Discovery_IsLoadedOnlyWhenTheListedModelsAreUsedUp()
     {

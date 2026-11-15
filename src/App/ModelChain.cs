@@ -32,38 +32,81 @@ public static class ModelFallback
 }
 
 /// <summary>
-/// Circuit breaker, one per task: after <see cref="Threshold"/> failures in a row a model is marked unavailable
-/// for the rest of the task, so the following chunks do not waste time on it. Thread safe (parallel chunks).
+/// Circuit breaker, one per task: after <see cref="Threshold"/> failures in a row a model is marked unavailable,
+/// so the following chunks do not waste time on it. Thread safe (parallel chunks).
+/// A model that went down because of a TEMPORARY problem (rate limit, overload, network) is given a single probe
+/// call once <see cref="RetryAfter"/> has passed; if it works it is back, if not it waits another period.
+/// A model that is missing or not allowed for this key stays down for the rest of the task.
 /// </summary>
 public sealed class ModelHealth
 {
+    public static readonly TimeSpan DefaultRetryAfter = TimeSpan.FromSeconds(60);
+
     readonly object _gate = new();
+    readonly Func<DateTime> _clock;
     readonly Dictionary<string, int> _streak = new(StringComparer.Ordinal);
     readonly Dictionary<string, string> _lastError = new(StringComparer.Ordinal);
-    readonly HashSet<string> _down = new(StringComparer.Ordinal);
+    readonly Dictionary<string, DateTime> _downSince = new(StringComparer.Ordinal);
+    readonly HashSet<string> _permanent = new(StringComparer.Ordinal);
 
     public int Threshold { get; }
 
-    public ModelHealth(int threshold = 3) => Threshold = Math.Max(1, threshold);
+    /// <summary>Pause before a temporarily failing model gets one more chance. <see cref="Timeout.InfiniteTimeSpan"/> = never.</summary>
+    public TimeSpan RetryAfter { get; }
 
-    public bool IsDown(string model) { lock (_gate) return _down.Contains(model); }
+    public ModelHealth(int threshold = 3, TimeSpan? retryAfter = null, Func<DateTime>? clock = null)
+    {
+        Threshold = Math.Max(1, threshold);
+        RetryAfter = retryAfter ?? DefaultRetryAfter;
+        _clock = clock ?? (() => DateTime.UtcNow);
+    }
 
-    public void Success(string model) { lock (_gate) _streak[model] = 0; }
+    /// <summary>
+    /// True while the model should be skipped. When the pause of a temporarily failing model is over this returns
+    /// false ONCE (the probe) and the pause starts again, so parallel chunks do not all hit the model at the same time.
+    /// </summary>
+    public bool IsDown(string model)
+    {
+        lock (_gate)
+        {
+            if (!_downSince.TryGetValue(model, out var since)) return false;
+            if (_permanent.Contains(model) || RetryAfter == Timeout.InfiniteTimeSpan) return true;
+            var now = _clock();
+            if (now - since < RetryAfter) return true;
+            _downSince[model] = now;
+            return false;
+        }
+    }
 
+    public void Success(string model)
+    {
+        lock (_gate)
+        {
+            _streak[model] = 0;
+            _downSince.Remove(model);
+            _permanent.Remove(model);
+        }
+    }
+
+    /// <param name="temporary">False for a model that is missing or not allowed: it will not be probed again.</param>
     /// <returns>True when this failure is the one that marked the model unavailable.</returns>
-    public bool Failure(string model, string error)
+    public bool Failure(string model, string error, bool temporary = true)
     {
         lock (_gate)
         {
             _streak[model] = _streak.GetValueOrDefault(model) + 1;
             _lastError[model] = error;
-            return _streak[model] >= Threshold && _down.Add(model);
+            if (!temporary && _streak[model] >= Threshold) _permanent.Add(model);
+            if (_streak[model] < Threshold) return false;
+            var isNew = !_downSince.ContainsKey(model);
+            _downSince[model] = _clock(); // a failed probe starts a new pause
+            return isNew;
         }
     }
 
     public string? LastError(string model) { lock (_gate) return _lastError.GetValueOrDefault(model); }
 
-    public List<string> DownModels() { lock (_gate) return _down.OrderBy(x => x, StringComparer.Ordinal).ToList(); }
+    public List<string> DownModels() { lock (_gate) return _downSince.Keys.OrderBy(x => x, StringComparer.Ordinal).ToList(); }
 }
 
 /// <param name="Attempts">How many HTTP attempts the transport may make for this model.</param>
@@ -144,8 +187,8 @@ public sealed class ModelChain
                 last = e;
                 var detail = e.Technical ?? e.Message;
                 errors.Add($"[{model}] {detail}");
-                if (_health.Failure(model, detail))
-                    _log($"{_provider}: {model} marked unavailable for the rest of the task after {_health.Threshold} failures in a row");
+                if (_health.Failure(model, detail, temporary: e.Kind is not (ErrKind.NotFound or ErrKind.BadKey)))
+                    _log($"{_provider}: {model} marked unavailable after {_health.Threshold} failures in a row");
             }
         }
 

@@ -90,18 +90,26 @@ public static class HtmlPages
 
     // ------------------------------------------------------------------ page shell
 
+    const string DarkVars = "--bg:#10141c;--card:#1a2030;--text:#e8ecf4;--muted:#9aa4b8;--accent:#5b8cff;--accent-d:#7aa2ff;--line:#2a3347;--err:#ff8a7a;--errbg:#2a1a1a;color-scheme:dark";
+    // Dark by the system setting, unless the reader picked light with the toggle; or dark because the reader picked it.
+    const string AutoDarkCss = "@media (prefers-color-scheme:dark){:root:not([data-theme=light]){" + DarkVars + "}}\n:root[data-theme=dark]{" + DarkVars + "}";
+
     const string Css = @"
 :root{--bg:#f3f5f9;--card:#fff;--text:#1d2433;--muted:#667085;--accent:#2563eb;--accent-d:#1d4ed8;--line:#e4e8f0;--err:#b42318;--errbg:#fef3f2}
-@media (prefers-color-scheme:dark){:root{--bg:#10141c;--card:#1a2030;--text:#e8ecf4;--muted:#9aa4b8;--accent:#5b8cff;--accent-d:#7aa2ff;--line:#2a3347;--err:#ff8a7a;--errbg:#2a1a1a}}
+" + AutoDarkCss + @"
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Segoe UI','Noto Sans Hebrew',Arial,sans-serif;line-height:1.75;font-size:18px}
 .wrap{max-width:860px;margin:0 auto;padding:24px 16px 60px}
 header{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;margin-bottom:16px}
 h1{font-size:1.45rem;margin:0 0 4px;line-height:1.35}
 .meta{color:var(--muted);font-size:.9rem;word-break:break-all}
-button#copy{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 22px;font-size:1rem;font-family:inherit;cursor:pointer;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+button#copy,button.sec{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 22px;font-size:1rem;font-family:inherit;cursor:pointer;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.2)}
 button#copy:hover{background:var(--accent-d)}
 button#copy.done{background:#16a34a}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button.sec{background:var(--card);color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:500;padding:10px 16px}
+button.sec:hover{background:var(--bg)}
+button.sec.done{background:#16a34a;color:#fff;border-color:#16a34a}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 28px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 .card p{margin:.2em 0 .9em}
 section{margin-bottom:1.4rem}
@@ -122,7 +130,7 @@ details{margin-top:1rem;color:var(--muted);font-size:.85rem}
 pre{white-space:pre-wrap;direction:ltr;text-align:left;background:rgba(0,0,0,.06);padding:10px;border-radius:8px;overflow:auto}
 code{direction:ltr;unicode-bidi:embed;background:rgba(0,0,0,.07);padding:1px 6px;border-radius:5px;font-size:.9em}
 a{color:var(--accent)}
-@media print{button#copy,footer{display:none}body{background:#fff}.card{box-shadow:none}}";
+@media print{.tools,footer{display:none}body{background:#fff}.card{box-shadow:none}}";
 
     const string CopyScript = @"
 const btn=document.getElementById('copy');
@@ -134,14 +142,49 @@ btn.addEventListener('click',async()=>{
   setTimeout(()=>{btn.textContent=old;btn.classList.remove('done')},2000);
 });";
 
+    /// <summary>Download as a text file and the dark mode toggle. <c>getPlain</c> returns the current plain text; <c>remember</c> (optional) stores the theme choice (the live page has none: its address changes on every run).</summary>
+    const string ToolsScript = """
+function wireTools(getPlain,remember){
+  const dl=document.getElementById('dl'),th=document.getElementById('theme'),root=document.documentElement;
+  function dark(){return root.dataset.theme==='dark'||(!root.dataset.theme&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)}
+  function paint(){th.textContent=dark()?'☀':'☾';th.title=dark()?'מצב בהיר':'מצב כהה';th.setAttribute('aria-label',th.title)}
+  paint();
+  th.addEventListener('click',function(){
+    const next=dark()?'light':'dark';
+    root.dataset.theme=next;
+    if(remember)remember(next);
+    paint();
+  });
+  dl.addEventListener('click',function(){
+    const text=getPlain();
+    const old=dl.textContent;
+    if(!text){dl.textContent='אין עדיין טקסט';setTimeout(function(){dl.textContent=old},1500);return}
+    const h1=document.getElementById('title')||document.querySelector('h1');
+    const base=((h1&&h1.textContent)||document.title||'תמלול').replace(/[\\\/:*?\x22<>|]+/g,' ').replace(/\s+/g,' ').trim().slice(0,80)||'תמלול';
+    const blob=new Blob(['\ufeff'+text],{type:'text/plain;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=base+'.txt';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(function(){URL.revokeObjectURL(a.href)},1000);
+    dl.textContent='ההורדה התחילה ✓';dl.classList.add('done');
+    setTimeout(function(){dl.textContent=old;dl.classList.remove('done')},2000);
+  });
+}
+""";
+
+    /// <summary>Applies the saved theme choice before the first paint (no flash).</summary>
+    const string ThemeInit = "<script>try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}</script>";
+
+    const string ToolButtons = "<div class=\"tools\"><button id=\"copy\" type=\"button\">העתק הכל</button><button id=\"dl\" type=\"button\" class=\"sec\">הורדה</button><button id=\"theme\" type=\"button\" class=\"sec\">☾</button></div>";
+
     static string Shell(string title, string meta, string bodyHtml, string? plain, string? noteHtml, string cardClass = "", bool isSummary = false)
     {
         var sb = new StringBuilder();
         sb.AppendLine("<!DOCTYPE html>");
         sb.AppendLine("<html lang=\"he\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-        sb.AppendLine("<title>" + E(title) + "</title><style>" + Css + "</style></head><body><div class=\"wrap\">");
+        sb.AppendLine("<title>" + E(title) + "</title>" + (plain != null ? ThemeInit : "") + "<style>" + Css + "</style></head><body><div class=\"wrap\">");
         sb.AppendLine("<header><div><h1>" + E(title) + "</h1><div class=\"meta\">" + E(meta) + "</div></div>");
-        if (plain != null) sb.AppendLine("<button id=\"copy\" type=\"button\">העתק הכל</button>");
+        if (plain != null) sb.AppendLine(ToolButtons);
         sb.AppendLine("</header>");
         if (noteHtml != null) sb.AppendLine("<div class=\"note\">" + noteHtml + "</div>");
         sb.AppendLine("<div class=\"card " + cardClass + "\" id=\"content\">" + bodyHtml + "</div>");
@@ -150,7 +193,7 @@ btn.addEventListener('click',async()=>{
         if (plain != null)
         {
             // JsonSerializer escapes < > & so the text cannot break out of the script tag.
-            sb.AppendLine("<script>const PLAIN=" + JsonSerializer.Serialize(plain) + ";" + CopyScript + "</script>");
+            sb.AppendLine("<script>const PLAIN=" + JsonSerializer.Serialize(plain) + ";" + CopyScript + ToolsScript + "\nwireTools(function(){return PLAIN},function(t){try{localStorage.setItem('theme',t)}catch(e){}});</script>");
         }
         sb.AppendLine("</body></html>");
         return sb.ToString();
@@ -226,6 +269,7 @@ btn.addEventListener('click',async function(){
   const old=btn.textContent;btn.textContent=ok?'הועתק ✓':'ההעתקה נכשלה';btn.classList.toggle('done',ok);
   setTimeout(function(){btn.textContent=old;btn.classList.remove('done')},2000);
 });
+wireTools(function(){return PLAIN});
 tick();
 })();
 """;
@@ -238,13 +282,13 @@ tick();
         sb.AppendLine("<html lang=\"he\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
         sb.AppendLine("<title>" + E(title) + "</title><style>" + Css + LiveCss + "</style></head><body><div class=\"wrap\">");
         sb.AppendLine("<header><div><h1 id=\"title\">" + E(title) + "</h1><div class=\"meta\">" + E(meta) + "</div></div>");
-        sb.AppendLine("<button id=\"copy\" type=\"button\">העתק הכל</button></header>");
+        sb.AppendLine(ToolButtons + "</header>");
         sb.AppendLine("<div class=\"note\" id=\"note\"></div>");
         sb.AppendLine("<div class=\"card\" id=\"content\"></div>");
         sb.AppendLine("<div class=\"pending\" id=\"pending\" style=\"display:block\">מתמלל...</div>");
         sb.AppendLine("<div class=\"saved\" id=\"saved\"></div>");
         sb.AppendLine("<footer>הופק באמצעות בינה מלאכותית. ייתכנו אי-דיוקים, ולכן כדאי לבדוק פרטים חשובים מול המקור.</footer></div>");
-        sb.AppendLine("<script>" + LiveScript + "</script></body></html>");
+        sb.AppendLine("<script>" + ToolsScript + "\n" + LiveScript + "</script></body></html>");
         return sb.ToString();
     }
 

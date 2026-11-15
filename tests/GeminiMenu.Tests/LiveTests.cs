@@ -465,6 +465,38 @@ public class LiveServerTests
         Assert.Contains("&lt;b&gt;", html);
         Assert.DoesNotContain("localStorage", html);
     }
+
+    [Fact]
+    public void LivePage_HasDownloadAndThemeButtons_WithoutRememberingTheTheme()
+    {
+        var html = HtmlPages.LivePage("תמלול", "rec.mp3");
+        Assert.Contains("id=\"dl\"", html);
+        Assert.Contains("id=\"theme\"", html);
+        Assert.Contains("wireTools(function(){return PLAIN});", html);
+        Assert.Contains(":root[data-theme=dark]", html);
+        Assert.DoesNotContain("localStorage", html); // the address changes on every run: nothing to remember it by
+    }
+
+    [Fact]
+    public void ResultPage_HasDownloadAndThemeButtons_RemembersTheTheme_AndKeepsTheFooter()
+    {
+        var page = HtmlPages.ResultPage(new JobResult(JobKind.Transcribe, "rec.mp3", HtmlPages.TranscriptBody("שלום"), "שלום", null));
+        Assert.Contains("id=\"copy\"", page);
+        Assert.Contains("id=\"dl\"", page);
+        Assert.Contains("id=\"theme\"", page);
+        Assert.Contains("localStorage.setItem('theme'", page);
+        Assert.Contains("@media (prefers-color-scheme:dark){:root:not([data-theme=light])", page);
+        Assert.Contains("הופק באמצעות Gemini", page);
+        Assert.Contains("@media print{.tools,footer{display:none}", page);
+    }
+
+    [Fact]
+    public void ErrorAndPlainlessPages_HaveNoToolButtons()
+    {
+        var page = HtmlPages.ErrorPage(new AppException(ErrKind.Other, "x"), "rec.mp3", JobKind.Transcribe);
+        Assert.DoesNotContain("id=\"dl\"", page);
+        Assert.DoesNotContain("wireTools", page);
+    }
 }
 
 public class LiveSessionTests

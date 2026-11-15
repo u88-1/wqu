@@ -29,7 +29,8 @@ public sealed record OutputSelection(OutputMode Mode, string CustomInstruction =
 
 /// <summary>Per-run options taken from the settings window.</summary>
 /// <param name="Live">Told about every finished chunk (live page, partial file). Null = nobody listens.</param>
-public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal", ILiveSink? Live = null)
+/// <param name="Resume">Continue an earlier, interrupted run: its text is kept and only the rest is transcribed.</param>
+public sealed record JobOptions(bool Timestamps = true, int Parallel = 1, int ChunkSeconds = 180, string SummaryDetail = "normal", ILiveSink? Live = null, ResumePoint? Resume = null)
 {
     public static JobOptions From(AppConfig c) =>
         new(c.Timestamps, Math.Clamp(c.ParallelChunks, 1, 4), Math.Clamp(c.ChunkSeconds, 60, 300), c.SummaryDetail);
@@ -155,6 +156,11 @@ public static class Jobs
         _ => "application/octet-stream",
     };
 
+    /// <summary>First chunk of a live transcription: short, so the first text shows up within seconds.</summary>
+    internal const int FirstChunkSeconds = 50;
+    /// <summary>With the live page open, recordings longer than this go through chunks (otherwise there is nothing to show until the end).</summary>
+    internal const int LiveChunkThresholdSeconds = 90;
+
     static async Task<JobResult> TranscribeAsync(string file, string ext, string name, GeminiClient? client, Action<string> status, CancellationToken ct, JobOptions o, AudioTranscriber? audioTranscriber = null)
     {
         if (audioTranscriber != null)
@@ -176,7 +182,8 @@ public static class Jobs
         }
 
         bool unknownButBig = duration == TimeSpan.Zero && new FileInfo(file).Length > UnknownDurationChunkBytes;
-        if (duration > TimeSpan.FromSeconds(o.ChunkSeconds) || unknownButBig)
+        int chunkThreshold = o.Live != null ? Math.Min(o.ChunkSeconds, LiveChunkThresholdSeconds) : o.ChunkSeconds;
+        if (duration > TimeSpan.FromSeconds(chunkThreshold) || unknownButBig || o.Resume != null)
             return await TranscribeChunksAsync(file, name, (p, pr, c) => TranscribeChunkAsync(p, pr, client, c), status, ct, o).ConfigureAwait(false);
 
         string upPath = file;
@@ -228,7 +235,7 @@ public static class Jobs
     {
         status("מכין קטעים לתמלול...");
         AudioChunkSet chunkSet;
-        try { chunkSet = AudioConvert.CreateChunks(file, o.ChunkSeconds); }
+        try { chunkSet = AudioConvert.CreateChunks(file, o.ChunkSeconds, o.Resume?.StartAt ?? TimeSpan.Zero, o.Live != null && o.Resume == null ? FirstChunkSeconds : 0); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or System.Runtime.InteropServices.COMException)
         {
             throw new AppException(ErrKind.FileProblem, "לא הצלחתי לקרוא את ההקלטה כדי לחלק אותה לקטעים.", technical: ex.Message, inner: ex);
@@ -329,7 +336,7 @@ public static class Jobs
                 return o.Timestamps ? NormalizeTimestamps(r.Text, c.AbsStart - c.CoreStart) : r.Text;
             }
 
-            string merged = "";
+            string merged = o.Resume?.Text ?? "";
             var topLevel = chunkSet.Chunks.ToList();
             o.Live?.Begin(topLevel.Count);
             if (o.Parallel <= 1)
@@ -354,7 +361,7 @@ public static class Jobs
                 foreach (var t in texts) merged = MergeChunkTranscripts(merged, t);
             }
 
-            if (successes == 0)
+            if (successes == 0 && (o.Resume == null || topLevel.Count > 0))
                 throw firstError ?? new AppException(ErrKind.Blocked, "לא הצלחתי לתמלל את ההקלטה.");
 
             var final = merged.Trim();
@@ -364,6 +371,7 @@ public static class Jobs
                     ? "קטעים שנראו חלקיים או נקטעו חולקו אוטומטית לקטעים קצרים יותר."
                     : $"המדיה חולקה ל-{chunkSet.Chunks.Count} קטעים עם חפיפה קצרה כדי לשמור על רצף הדיבור.",
             };
+            if (o.Resume != null) notes.Add($"התמלול המשיך מתמלול חלקי שנשמר קודם (עד {Fmt(o.Resume.StartAt)}).");
             if (o.Parallel > 1) notes.Add("הקטעים תומללו במקביל, ולכן תוויות הדוברים עלולות להתחלף בין קטעים.");
             notes.AddRange(ModelNotes(modelUse.Select(x => x.Model)));
             if (gaps.Count > 0) notes.Add("קטעים שלא תומללו במלואם: " + string.Join(", ", gaps) + ".");

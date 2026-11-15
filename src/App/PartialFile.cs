@@ -22,6 +22,8 @@ public sealed class PartialData
     public long MtimeTicks { get; set; }
     public int ChunkSeconds { get; set; }
     public bool Timestamps { get; set; }
+    /// <summary>Which engine transcribed ("gemini" or "openai"): a resumed run keeps to the same one.</summary>
+    public string Engine { get; set; } = "";
     public DateTime UpdatedUtc { get; set; }
     public List<PartialChunk> Chunks { get; set; } = new();
 }
@@ -45,14 +47,14 @@ public sealed class PartialFile : ILiveSink
     public string FilePath => _path;
 
     /// <param name="existing">Chunks of an earlier run that are kept (resume).</param>
-    public PartialFile(string dir, string sourceFile, int chunkSeconds, bool timestamps, IEnumerable<PartialChunk>? existing = null)
+    public PartialFile(string dir, string sourceFile, int chunkSeconds, bool timestamps, string engine, IEnumerable<PartialChunk>? existing = null)
     {
         var info = new FileInfo(sourceFile);
         _path = PathFor(dir, info);
         _data = new PartialData
         {
             Source = info.FullName, Size = SafeLength(info), MtimeTicks = SafeMtime(info),
-            ChunkSeconds = chunkSeconds, Timestamps = timestamps,
+            ChunkSeconds = chunkSeconds, Timestamps = timestamps, Engine = engine,
         };
         if (existing != null) _data.Chunks.AddRange(existing);
     }

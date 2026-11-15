@@ -175,7 +175,7 @@ public class PartialFileTests : IDisposable
     [Fact]
     public void EveryChunkIsOnDiskAtOnce_AndNoTempFileIsLeft()
     {
-        var p = new PartialFile(Store, _src, 180, true);
+        var p = new PartialFile(Store, _src, 180, true, "gemini");
         p.ChunkDone(C(0, 0, 180, "[00:00:00] אחד"));
         Assert.True(File.Exists(p.FilePath));
         Assert.False(File.Exists(p.FilePath + ".tmp"));
@@ -190,7 +190,7 @@ public class PartialFileTests : IDisposable
     [Fact]
     public void ARedoneChunkReplacesTheOldOne()
     {
-        var p = new PartialFile(Store, _src, 180, true);
+        var p = new PartialFile(Store, _src, 180, true, "gemini");
         p.ChunkDone(C(0, 0, 180, "[⚠ הקטע 00:00:00–00:03:00 לא תומלל במלואו]", gap: true));
         p.ChunkDone(C(0, 0, 180, "תוקן"));
         var data = PartialFile.TryLoad(Store, _src)!;
@@ -202,7 +202,7 @@ public class PartialFileTests : IDisposable
     [Fact]
     public void ChangedOrOldOrBrokenFiles_AreNotOffered()
     {
-        var p = new PartialFile(Store, _src, 180, true);
+        var p = new PartialFile(Store, _src, 180, true, "gemini");
         p.ChunkDone(C(0, 0, 180, "טקסט"));
         Assert.NotNull(PartialFile.TryLoad(Store, _src));
 
@@ -214,12 +214,22 @@ public class PartialFileTests : IDisposable
         Assert.Null(PartialFile.TryLoad(Store, _src));
 
         // a different recording at the same path (size changed) is not the same work
-        var p2 = new PartialFile(Store, _src, 180, true);
+        var p2 = new PartialFile(Store, _src, 180, true, "gemini");
         p2.ChunkDone(C(0, 0, 180, "טקסט"));
         var key = p2.FilePath;
         File.WriteAllBytes(_src, new byte[2000]);
         Assert.Null(PartialFile.TryLoad(Store, _src));
         Assert.True(File.Exists(key)); // the stale file is simply ignored (and purged later)
+    }
+
+    [Fact]
+    public void TheEngineIsRemembered_SoAResumeKeepsToTheSameOne()
+    {
+        var p = new PartialFile(Store, _src, 180, true, "openai");
+        p.ChunkDone(C(0, 0, 180, "אחד"));
+        var data = PartialFile.TryLoad(Store, _src)!;
+        Assert.Equal("openai", data.Engine);
+        Assert.True(data.Timestamps);
     }
 
     [Fact]
@@ -260,11 +270,11 @@ public class PartialFileTests : IDisposable
     [Fact]
     public void ResumedRun_KeepsTheEarlierChunks()
     {
-        var first = new PartialFile(Store, _src, 180, true);
+        var first = new PartialFile(Store, _src, 180, true, "gemini");
         first.ChunkDone(C(0, 0, 180, "אחד"));
         var loaded = PartialFile.TryLoad(Store, _src)!;
 
-        var second = new PartialFile(Store, _src, 180, true, PartialFile.PrefixChunks(loaded));
+        var second = new PartialFile(Store, _src, 180, true, "gemini", PartialFile.PrefixChunks(loaded));
         second.ChunkDone(C(0, 180, 360, "שניים"));
         var after = PartialFile.TryLoad(Store, _src)!;
         Assert.Equal(2, after.Chunks.Count);
@@ -274,7 +284,7 @@ public class PartialFileTests : IDisposable
     [Fact]
     public void Delete_RemovesTheFile_AndPurgeRemovesOldOnes()
     {
-        var p = new PartialFile(Store, _src, 180, true);
+        var p = new PartialFile(Store, _src, 180, true, "gemini");
         p.ChunkDone(C(0, 0, 180, "אחד"));
         p.Delete();
         Assert.False(File.Exists(p.FilePath));
@@ -454,5 +464,54 @@ public class LiveServerTests
         Assert.DoesNotContain("<b>כותרת</b>", html);
         Assert.Contains("&lt;b&gt;", html);
         Assert.DoesNotContain("localStorage", html);
+    }
+}
+
+public class LiveSessionTests
+{
+    [Fact]
+    public async Task Start_OpensTheAddress_AndThePageIsThere()
+    {
+        string? opened = null;
+        using var session = LiveSession.TryStart(@"C:\rec\שיעור.mp3", url => { opened = url; return true; });
+        Assert.NotNull(session);
+        Assert.NotNull(opened);
+        Assert.Equal(session!.Url, opened);
+        using var http = new HttpClient();
+        var html = await http.GetStringAsync(opened);
+        Assert.Contains("שיעור.mp3", html);
+        session.View.Begin(1);
+        var state = JsonDocument.Parse(await http.GetStringAsync(opened + "state?since=-1")).RootElement;
+        Assert.Contains("מתמלל", state.GetProperty("pending").GetString());
+    }
+
+    [Fact]
+    public async Task IfTheBrowserCannotBeOpened_NothingIsLeftRunning()
+    {
+        string? opened = null;
+        var session = LiveSession.TryStart("x.mp3", url => { opened = url; return false; });
+        Assert.Null(session);
+        await Task.Delay(100);
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        await Assert.ThrowsAsync<HttpRequestException>(() => http.GetAsync(opened!));
+    }
+
+    [Fact]
+    public async Task IfOpeningThrows_TheJobGoesOnWithoutTheLivePage()
+    {
+        string? opened = null;
+        var session = LiveSession.TryStart("x.mp3", url => { opened = url; throw new InvalidOperationException("no browser"); });
+        Assert.Null(session);
+        await Task.Delay(100);
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        await Assert.ThrowsAsync<HttpRequestException>(() => http.GetAsync(opened!));
+    }
+
+    [Fact]
+    public void ResultSeen_IsFalseWhenNoTabEverLoaded()
+    {
+        using var session = LiveSession.TryStart("x.mp3", _ => true)!;
+        session.View.Complete("t", "<p>x</p>", "x", null, null);
+        Assert.False(session.ResultSeenInBrowser(TimeSpan.FromMilliseconds(200)));
     }
 }

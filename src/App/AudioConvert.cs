@@ -94,7 +94,9 @@ public static class AudioConvert
         return reader.TotalTime;
     }
 
-    public static AudioChunkSet CreateChunks(string input, int chunkSeconds = ChunkSeconds)
+    /// <param name="startAt">Resume: only the part of the recording after this point is cut (with the usual overlap before it).</param>
+    /// <param name="firstChunkSeconds">A shorter first chunk, so the first text appears quickly (0 = same length as the others).</param>
+    public static AudioChunkSet CreateChunks(string input, int chunkSeconds = ChunkSeconds, TimeSpan startAt = default, int firstChunkSeconds = 0)
     {
         var directory = Path.Combine(Path.GetTempPath(), "GeminiMenu_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -111,9 +113,11 @@ public static class AudioConvert
                 var duration = wav.TotalTime;
                 var coreLength = TimeSpan.FromSeconds(chunkSeconds);
                 var overlap = TimeSpan.FromSeconds(ChunkOverlapSeconds);
-                for (var start = TimeSpan.Zero; start < duration; start += coreLength)
+                var firstLength = firstChunkSeconds > 0 ? TimeSpan.FromSeconds(Math.Min(firstChunkSeconds, chunkSeconds)) : coreLength;
+                var length = firstLength;
+                for (var start = startAt < TimeSpan.Zero ? TimeSpan.Zero : startAt; start < duration; start += length, length = coreLength)
                 {
-                    var end = start + coreLength;
+                    var end = start + length;
                     if (end > duration) end = duration;
                     chunks.Add(AudioChunkSet.CreateChunk(wav, start, end, overlap, directory, 0, start));
                 }

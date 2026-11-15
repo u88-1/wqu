@@ -15,6 +15,7 @@
     <Compile Include="..\..\src\App\LiveTranscript.cs" />
     <Compile Include="..\..\src\App\PartialFile.cs" />
     <Compile Include="..\..\src\App\LiveServer.cs" />
+    <Compile Include="..\..\src\App\LiveSession.cs" />
     <Compile Include="..\..\src\App\ModelChain.cs" />
     <Compile Include="..\..\src\App\ModelFallbackClients.cs" />
     <Compile Include="..\..\src\App\DocxWriter.cs" />

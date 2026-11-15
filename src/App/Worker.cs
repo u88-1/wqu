@@ -22,6 +22,9 @@ public static class Worker
         form.CancelRequested += () => cts.Cancel();
         var stopwatch = Stopwatch.StartNew();
         string? outPath = null;
+        LiveSession? live = null;      // the page in the browser that fills in while the work goes on
+        PartialFile? partial = null;   // every finished chunk on disk, so a crash or a cancel loses nothing
+        bool succeeded = false;
         Action<string> status = m => { Log.Write(m); form.SetStatus(m); };
         OutputSelection ReadOutputSelection() => form.InvokeRequired
             ? (OutputSelection)form.Invoke(new Func<OutputSelection>(() => form.SelectedOutput))!
@@ -58,6 +61,33 @@ public static class Worker
                 using var slot = await JobSlot.AcquireAsync(cfg.MaxConcurrentJobs, status, cts.Token);
                 stopwatch.Restart();
 
+                // ---- live page, partial file and resume (transcriptions only; none of it may stop the job)
+                ResumePoint? resume = null;
+                if (kind == JobKind.Transcribe)
+                {
+                    List<PartialChunk>? kept = null;
+                    try
+                    {
+                        PartialFile.Purge(PartialFile.DefaultDir);
+                        var prev = PartialFile.TryLoad(PartialFile.DefaultDir, file);
+                        if (prev != null && prev.Engine == cfg.TranscriptionProvider && prev.Timestamps == cfg.Timestamps
+                            && PartialFile.GetResumePoint(prev) is { } point)
+                        {
+                            var upTo = $"{(int)point.StartAt.TotalHours:00}:{point.StartAt.Minutes:00}:{point.StartAt.Seconds:00}";
+                            var answer = MessageBox.Show(form,
+                                $"נמצא תמלול חלקי של ההקלטה הזאת: הקטעים עד {upTo} כבר תומללו.\n\nכן = המשך משם\nלא = התחל מההתחלה",
+                                "המשך תמלול", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1,
+                                MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign);
+                            if (answer == DialogResult.Yes) { resume = point; kept = PartialFile.PrefixChunks(prev); }
+                        }
+                    }
+                    catch (Exception ex) { Log.Write("resume check failed: " + ex.Message); }
+
+                    partial = new PartialFile(PartialFile.DefaultDir, file, cfg.ChunkSeconds, cfg.Timestamps, cfg.TranscriptionProvider, kept);
+                    if (cfg.LiveView) live = LiveSession.TryStart(file);
+                    if (live != null && resume != null) live.View.Seed(resume.Text);
+                }
+
                 using var gemini = new GeminiClient(cfg, status);
                 gemini.ModelWorked = m => { cfg.ResolvedModel = m; try { cfg.Save(); } catch { } };
                 // One HTTP client for all models of a provider; each provider keeps to its own models (never switches provider).
@@ -89,7 +119,7 @@ public static class Worker
                         }, status);
                     audio = (path, token) => transcriber.TranscribeAsync(path, token);
                 }
-                var options = JobOptions.From(cfg);
+                var options = JobOptions.From(cfg) with { Live = new CompositeSink(live?.View, partial), Resume = resume };
                 var geminiOrNull = string.IsNullOrWhiteSpace(cfg.ApiKey) ? null : gemini;
                 var result = await Task.Run(() => Jobs.RunAsync(kind, file, geminiOrNull, status, cts.Token, options, ReadOutputSelection, textClient, audio));
                 var srtSource = result;
@@ -128,6 +158,7 @@ public static class Worker
                         HtmlPages.SaveText(file, "תמלול מלא", transcript);
                         throw new AppException(ErrKind.NoKey, "לא הוגדר מפתח API למנוע העריכה והסיכום שנבחר. התמלול המלא נשמר בקובץ נפרד.");
                     }
+                    if (transcriptSelection.Mode != OutputMode.TranscriptExact) live?.View.Processing("מעבד את התמלול (עריכה או סיכום)...");
                     result = await Jobs.FormatTranscriptAsync(Path.GetFileName(file), transcript, transcriptSelection, textClient ?? geminiOrNull!, status, cts.Token, options);
                 }
                 else if (ReadOutputSelection().Mode == OutputMode.DocumentBookStyle)
@@ -144,14 +175,19 @@ public static class Worker
                     ResultFormat.Docx => HtmlPages.SaveDocx(file, suffix, result),
                     _ => HtmlPages.Save(file, suffix, html),
                 };
+                live?.View.Complete(result.Title ?? (kind == JobKind.Transcribe ? "תמלול הקלטה" : "סיכום מסמך"), result.BodyHtml, result.PlainText, result.Note, outPath);
+                partial?.Delete();
+                succeeded = true;
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
             {
-                // user cancelled: no page
+                // user cancelled: no result page. What was transcribed stays in the partial file.
+                live?.View.Cancel();
             }
             catch (Exception ex)
             {
                 Log.Write("ERROR: " + ex);
+                live?.View.Fail(ex is AppException ? ex.Message : "אירעה שגיאה.");
                 try { outPath = HtmlPages.Save(file, "שגיאה", HtmlPages.ErrorPage(ex, Path.GetFileName(file), kind)); }
                 catch { MessageBox.Show(ex.Message, "Gemini", MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign); }
             }
@@ -163,7 +199,11 @@ public static class Worker
         };
 
         Application.Run(form);
-        if (outPath != null)
+
+        // The result page is already in the browser tab when that tab picked up the final state: do not open it twice.
+        bool shownInLiveTab = succeeded && live != null && live.ResultSeenInBrowser(TimeSpan.FromSeconds(4));
+        live?.Dispose();
+        if (outPath != null && !(shownInLiveTab && outPath.EndsWith(".html", StringComparison.OrdinalIgnoreCase)))
             Process.Start(new ProcessStartInfo(outPath) { UseShellExecute = true });
     }
 

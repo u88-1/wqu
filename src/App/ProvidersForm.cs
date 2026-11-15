@@ -20,6 +20,7 @@ public sealed class ProvidersForm : Form
     readonly TextBox _openAiTranscribeModel = new();
     readonly TextBox _language = new();
     readonly CheckBox _autoFallback = new();
+    readonly CheckBox _liveView = new();
     readonly TextBox _geminiModels = new();
     readonly TextBox _claudeModels = new();
     readonly TextBox _openAiModels = new();
@@ -132,6 +133,15 @@ public sealed class ProvidersForm : Form
         ModelRow("דגמי OpenAI נוספים לעריכה וסיכום", _openAiModels, _cfg.OpenAiModels);
         ModelRow("דגמי OpenAI נוספים לתמלול (למשל gpt-4o-mini-transcribe, whisper-1)", _openAiTranscribeModels, _cfg.OpenAiTranscribeModels);
 
+        // ---- live page
+        Label("תצוגה חיה של התמלול");
+        _liveView.Text = "פתח דף בדפדפן כשהתמלול מתחיל, והצג בו את הטקסט תוך כדי העבודה";
+        _liveView.Checked = _cfg.LiveView;
+        _liveView.Bounds = new Rectangle(20, y, 540, 26);
+        body.Controls.Add(_liveView);
+        y += 32;
+        Label("הדף פועל רק במחשב הזה (כתובת פנימית עם קוד אקראי) ונסגר בסיום. כל קטע שמסתיים נשמר בדיסק, ואם התמלול נקטע אפשר להמשיך ממנו בפעם הבאה.", muted: true, height: 36);
+
         // ---- book style instruction
         Label("הנחיית עריכה בסגנון ספר (אופציונלי)");
         Label("אפשר להדביק כאן הנחיה מלאה משלך. ריק = ההנחיה המובנית. הכללים הטכניים (כותרות, סימון [?]) נוספים אוטומטית.", muted: true, height: 36);
@@ -229,6 +239,7 @@ public sealed class ProvidersForm : Form
             _cfg.OpenAiTranscribeModel = string.IsNullOrWhiteSpace(_openAiTranscribeModel.Text) ? OpenAiClient.DefaultTranscribeModel : _openAiTranscribeModel.Text.Trim();
             _cfg.TranscriptionLanguage = _language.Text.Trim();
             _cfg.AutoFallback = _autoFallback.Checked;
+            _cfg.LiveView = _liveView.Checked;
             _cfg.GeminiModels = NormalizeList(_geminiModels.Text);
             _cfg.ClaudeModels = NormalizeList(_claudeModels.Text);
             _cfg.OpenAiModels = NormalizeList(_openAiModels.Text);
